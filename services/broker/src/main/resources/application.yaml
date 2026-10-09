@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: broker
+
+server:
+  port: 8110

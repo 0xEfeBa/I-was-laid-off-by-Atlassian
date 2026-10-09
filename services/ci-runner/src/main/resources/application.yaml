@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: ci-runner
+
+server:
+  port: 8170

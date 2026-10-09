@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: admin-api
+
+server:
+  port: 8140

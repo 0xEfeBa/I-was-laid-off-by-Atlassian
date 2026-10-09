@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: echo
+
+server:
+  port: 8180

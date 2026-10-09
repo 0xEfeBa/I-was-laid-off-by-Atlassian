@@ -1,0 +1,6 @@
+spring:
+  application:
+    name: edge-sidecar
+
+server:
+  port: 8120

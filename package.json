@@ -1,0 +1,10 @@
+{
+  "name": "tri-edge",
+  "private": true,
+  "packageManager": "pnpm@10.34.6",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
