@@ -9,7 +9,6 @@ plugins {
 dependencies {
     implementation(platform(SpringBootPlugin.BOM_COORDINATES))
     implementation(project(":libs:common"))
-    implementation("org.springframework.boot:spring-boot-starter-webmvc")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }

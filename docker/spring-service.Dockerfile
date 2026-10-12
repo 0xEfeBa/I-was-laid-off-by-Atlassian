@@ -7,6 +7,7 @@ RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination 
 FROM eclipse-temurin:21-jre
 RUN groupadd --system app && useradd --system --gid app --uid 10001 app
 WORKDIR /app
+ENV LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs
 COPY --from=extract /work/extracted/dependencies/ ./
 COPY --from=extract /work/extracted/spring-boot-loader/ ./
 COPY --from=extract /work/extracted/snapshot-dependencies/ ./
