@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: services
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:9100"]
+        labels: { service: control-plane }
+      - targets: ["host.docker.internal:9110"]
+        labels: { service: broker }
+      - targets: ["host.docker.internal:9120"]
+        labels: { service: edge-sidecar }
+      - targets: ["host.docker.internal:9130"]
+        labels: { service: identity }
+      - targets: ["host.docker.internal:9140"]
+        labels: { service: admin-api }
+      - targets: ["host.docker.internal:9150"]
+        labels: { service: git-service }
+      - targets: ["host.docker.internal:9160"]
+        labels: { service: repo-api }
+      - targets: ["host.docker.internal:9170"]
+        labels: { service: ci-runner }
+      - targets: ["host.docker.internal:9180"]
+        labels: { service: echo }
