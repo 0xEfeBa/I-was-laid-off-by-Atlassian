@@ -1,0 +1,5 @@
+apiVersion: tri-edge/v1
+name: echo
+hosts: [a.localhost, b.localhost, c.localhost, d.localhost]
+backends: [{ name: main, address: "echo:8180" }]
+routes: [{ path: /, backend: main }]

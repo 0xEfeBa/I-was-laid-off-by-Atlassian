@@ -9,6 +9,8 @@ build/
 node_modules/
 dist/
 *.tsbuildinfo
+test-results/
+playwright-report/
 
 .idea/
 *.iml
@@ -20,3 +22,5 @@ dist/
 .env
 .env.*
 !.env.example
+
+deploy/hetzner/.state/

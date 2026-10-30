@@ -1,0 +1,5 @@
+apiVersion: tri-edge/v1
+name: evil
+hosts: ["evil.localhost\"\n  - name: other-tenant"]
+backends: [{ name: main, address: "echo:8180" }]
+routes: [{ path: /, backend: main }]

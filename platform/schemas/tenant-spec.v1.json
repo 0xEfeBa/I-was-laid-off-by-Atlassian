@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tri-edge.dev/schemas/tenant-spec.v1.json",
+  "title": "tri-edge tenant",
+  "description": "How a team exposes its service through the tri-edge platform.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "name", "hosts", "backends", "routes"],
+  "properties": {
+    "apiVersion": { "const": "tri-edge/v1" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,30}$" },
+    "regions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["eu", "us", "ap"] }
+    },
+    "hosts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "maxLength": 253,
+        "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$"
+      }
+    },
+    "backends": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/backend" }
+    },
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 30,
+      "items": { "$ref": "#/$defs/route" }
+    },
+    "hook": { "$ref": "#/$defs/hook" }
+  },
+  "$defs": {
+    "address": {
+      "type": "string",
+      "maxLength": 260,
+      "pattern": "^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?:[0-9]{1,5}$"
+    },
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "address"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,30}$" },
+        "address": { "$ref": "#/$defs/address" }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "backend"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/[A-Za-z0-9._~/-]{0,200}$" },
+        "match": { "enum": ["prefix", "exact"] },
+        "methods": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] }
+        },
+        "backend": { "type": "string" },
+        "auth": { "enum": ["none", "session", "token", "any"] },
+        "scopes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["edge:read", "edge:write", "git:read", "git:write"] }
+        },
+        "routeBy": { "enum": ["local", "home"] },
+        "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 300 },
+        "rateLimit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requests", "per"],
+          "properties": {
+            "requests": { "type": "integer", "minimum": 1, "maximum": 100000 },
+            "per": { "enum": ["second", "minute", "hour"] }
+          }
+        }
+      }
+    },
+    "hook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address"],
+      "properties": {
+        "address": { "$ref": "#/$defs/address" },
+        "failOpen": { "type": "boolean" }
+      }
+    }
+  }
+}

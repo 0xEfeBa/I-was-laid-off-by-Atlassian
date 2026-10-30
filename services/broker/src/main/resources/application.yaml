@@ -4,3 +4,14 @@ spring:
 
 server:
   port: 8110
+
+triedge:
+  region: eu
+  clusters:
+    eu:
+      url: jdbc:postgresql://localhost:5432/triedge
+      username: broker
+      password: ${BROKER_DB_PASSWORD:}
+  broker:
+    etcd-url: http://localhost:2379
+    control-plane-url: http://localhost:8100

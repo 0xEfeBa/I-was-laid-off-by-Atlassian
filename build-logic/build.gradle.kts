@@ -4,5 +4,4 @@ plugins {
 
 dependencies {
     implementation(libs.spring.boot.gradle.plugin)
-    implementation(libs.graalvm.native.gradle.plugin)
 }

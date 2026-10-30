@@ -17,17 +17,13 @@ rootProject.name = "tri-edge"
 
 include(
     "libs:common",
+    "libs:tenant-spec",
 
     "services:control-plane",
     "services:broker",
     "services:edge-sidecar",
     "services:identity",
-    "services:admin-api",
-    "services:git-service",
-    "services:repo-api",
-    "services:ci-runner",
     "services:echo",
 
-    "tools:edgectl",
-    "tools:ci-agent",
+    "tests:region-loss",
 )

@@ -1,0 +1,210 @@
+name: tri-edge
+
+x-patroni: &patroni
+  image: tri-edge-patroni
+  build:
+    context: deploy/hetzner
+    dockerfile: patroni.Dockerfile
+  network_mode: host
+  restart: unless-stopped
+
+x-app: &app
+  network_mode: host
+  restart: unless-stopped
+  mem_limit: 512m
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.6.15
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - etcd
+      - --name=${REGION}
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://127.0.0.1:2379,http://${SELF}:2379
+      - --advertise-client-urls=http://${SELF}:2379
+      - --listen-peer-urls=http://${SELF}:2380
+      - --initial-advertise-peer-urls=http://${SELF}:2380
+      - --initial-cluster=eu=http://${EU_IP}:2380,us=http://${US_IP}:2380,ap=http://${AP_IP}:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=tri-edge
+      - --heartbeat-interval=250
+      - --election-timeout=2500
+    volumes:
+      - etcd-data:/etcd-data
+
+  db-eu:
+    <<: *patroni
+    environment:
+      PATRONI_SCOPE: eu
+      PATRONI_NAME: ${REGION}-eu
+      PATRONI_ETCD3_HOSTS: ${EU_IP}:2379,${US_IP}:2379,${AP_IP}:2379
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_RESTAPI_CONNECT_ADDRESS: ${SELF}:8008
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5431
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: ${SELF}:5431
+      PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      PATRONI_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
+    volumes:
+      - db-eu:/var/lib/postgresql/data
+
+  db-us:
+    <<: *patroni
+    environment:
+      PATRONI_SCOPE: us
+      PATRONI_NAME: ${REGION}-us
+      PATRONI_ETCD3_HOSTS: ${EU_IP}:2379,${US_IP}:2379,${AP_IP}:2379
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8009
+      PATRONI_RESTAPI_CONNECT_ADDRESS: ${SELF}:8009
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: ${SELF}:5432
+      PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      PATRONI_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
+    volumes:
+      - db-us:/var/lib/postgresql/data
+
+  db-ap:
+    <<: *patroni
+    environment:
+      PATRONI_SCOPE: ap
+      PATRONI_NAME: ${REGION}-ap
+      PATRONI_ETCD3_HOSTS: ${EU_IP}:2379,${US_IP}:2379,${AP_IP}:2379
+      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8010
+      PATRONI_RESTAPI_CONNECT_ADDRESS: ${SELF}:8010
+      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5433
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: ${SELF}:5433
+      PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      PATRONI_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
+    volumes:
+      - db-ap:/var/lib/postgresql/data
+
+  identity:
+    <<: *app
+    image: tri-edge-identity
+    build:
+      context: .
+      dockerfile: docker/spring-service.Dockerfile
+      args:
+        SERVICE: identity
+    environment:
+      TRIEDGE_REGION: ${REGION}
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://${EU_IP}:5431,${US_IP}:5431,${AP_IP}:5431/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_EU_USERNAME: identity_service
+      TRIEDGE_CLUSTERS_EU_PASSWORD: ${IDENTITY_DB_PASSWORD}
+      TRIEDGE_CLUSTERS_US_URL: jdbc:postgresql://${EU_IP}:5432,${US_IP}:5432,${AP_IP}:5432/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_US_USERNAME: identity_service
+      TRIEDGE_CLUSTERS_US_PASSWORD: ${IDENTITY_DB_PASSWORD}
+      TRIEDGE_CLUSTERS_AP_URL: jdbc:postgresql://${EU_IP}:5433,${US_IP}:5433,${AP_IP}:5433/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_AP_USERNAME: identity_service
+      TRIEDGE_CLUSTERS_AP_PASSWORD: ${IDENTITY_DB_PASSWORD}
+      TRIEDGE_IDENTITY_ETCD_URL: http://127.0.0.1:2379
+      TRIEDGE_IDENTITY_SIGNING_JWK: ${IDENTITY_SIGNING_JWK}
+      TRIEDGE_IDENTITY_SECURE_COOKIES: "false"
+      TRIEDGE_IDENTITY_ALLOWED_ORIGINS: http://localhost:5173
+      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+
+  edge-sidecar:
+    <<: *app
+    image: tri-edge-edge-sidecar
+    build:
+      context: .
+      dockerfile: docker/spring-service.Dockerfile
+      args:
+        SERVICE: edge-sidecar
+    environment:
+      TRIEDGE_REGION: ${REGION}
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://${EU_IP}:5431,${US_IP}:5431,${AP_IP}:5431/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_EU_USERNAME: edge_sidecar
+      TRIEDGE_CLUSTERS_EU_PASSWORD: ${EDGE_SIDECAR_DB_PASSWORD}
+      TRIEDGE_CLUSTERS_US_URL: jdbc:postgresql://${EU_IP}:5432,${US_IP}:5432,${AP_IP}:5432/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_US_USERNAME: edge_sidecar
+      TRIEDGE_CLUSTERS_US_PASSWORD: ${EDGE_SIDECAR_DB_PASSWORD}
+      TRIEDGE_CLUSTERS_AP_URL: jdbc:postgresql://${EU_IP}:5433,${US_IP}:5433,${AP_IP}:5433/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_AP_USERNAME: edge_sidecar
+      TRIEDGE_CLUSTERS_AP_PASSWORD: ${EDGE_SIDECAR_DB_PASSWORD}
+      TRIEDGE_SIDECAR_ISSUER: tri-edge
+      TRIEDGE_SIDECAR_JWKS_URL: http://127.0.0.1:8130/.well-known/jwks.json
+      TRIEDGE_SIDECAR_ETCD_URL: http://127.0.0.1:2379
+      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+
+  broker:
+    <<: *app
+    image: tri-edge-broker
+    build:
+      context: .
+      dockerfile: docker/spring-service.Dockerfile
+      args:
+        SERVICE: broker
+    environment:
+      TRIEDGE_REGION: ${REGION}
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://${EU_IP}:5431,${US_IP}:5431,${AP_IP}:5431/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_EU_USERNAME: broker
+      TRIEDGE_CLUSTERS_EU_PASSWORD: ${BROKER_DB_PASSWORD}
+      TRIEDGE_CLUSTERS_US_URL: jdbc:postgresql://${EU_IP}:5432,${US_IP}:5432,${AP_IP}:5432/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_US_USERNAME: broker
+      TRIEDGE_CLUSTERS_US_PASSWORD: ${BROKER_DB_PASSWORD}
+      TRIEDGE_CLUSTERS_AP_URL: jdbc:postgresql://${EU_IP}:5433,${US_IP}:5433,${AP_IP}:5433/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_AP_USERNAME: broker
+      TRIEDGE_CLUSTERS_AP_PASSWORD: ${BROKER_DB_PASSWORD}
+      TRIEDGE_BROKER_ETCD_URL: http://127.0.0.1:2379
+      TRIEDGE_BROKER_CONTROL_PLANE_URL: http://127.0.0.1:8100
+      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+
+  control-plane:
+    <<: *app
+    image: tri-edge-control-plane
+    build:
+      context: .
+      dockerfile: docker/control-plane.Dockerfile
+    environment:
+      TRIEDGE_REGION: ${REGION}
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://${EU_IP}:5431,${US_IP}:5431,${AP_IP}:5431/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_EU_USERNAME: control_plane
+      TRIEDGE_CLUSTERS_EU_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD}
+      TRIEDGE_CLUSTERS_US_URL: jdbc:postgresql://${EU_IP}:5432,${US_IP}:5432,${AP_IP}:5432/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_US_USERNAME: control_plane
+      TRIEDGE_CLUSTERS_US_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD}
+      TRIEDGE_CLUSTERS_AP_URL: jdbc:postgresql://${EU_IP}:5433,${US_IP}:5433,${AP_IP}:5433/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_AP_USERNAME: control_plane
+      TRIEDGE_CLUSTERS_AP_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD}
+      TRIEDGE_CONTROL_PLANE_ETCD_URL: http://127.0.0.1:2379
+      TRIEDGE_CONTROL_PLANE_SIDECAR_HOST: 127.0.0.1
+      TRIEDGE_CONTROL_PLANE_SYSTEM_TENANTS_DIR: /etc/triedge/system-tenants
+      TRIEDGE_CONTROL_PLANE_REMOTE_REGIONS_EU: ${EU_IP}
+      TRIEDGE_CONTROL_PLANE_REMOTE_REGIONS_US: ${US_IP}
+      TRIEDGE_CONTROL_PLANE_REMOTE_REGIONS_AP: ${AP_IP}
+      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+    volumes:
+      - ./deploy/system-tenants:/etc/triedge/system-tenants:ro
+
+  echo:
+    <<: *app
+    image: tri-edge-echo
+    build:
+      context: .
+      dockerfile: docker/spring-service.Dockerfile
+      args:
+        SERVICE: echo
+    environment:
+      TRIEDGE_ECHO_INSTANCE: echo-${REGION}
+      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+
+  envoy:
+    image: envoyproxy/envoy:v1.39.4
+    network_mode: host
+    restart: unless-stopped
+    command: ["-c", "/etc/envoy/envoy.yaml", "--service-node", "envoy-${REGION}", "--log-level", "warn"]
+    extra_hosts:
+      - "control-plane:127.0.0.1"
+      - "identity:127.0.0.1"
+      - "broker:127.0.0.1"
+      - "echo:127.0.0.1"
+    volumes:
+      - ./envoy/bootstrap.yaml:/etc/envoy/envoy.yaml:ro
+
+volumes:
+  etcd-data:
+  db-eu:
+  db-us:
+  db-ap:

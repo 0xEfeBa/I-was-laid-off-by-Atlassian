@@ -35,35 +35,16 @@ services:
       timeout: 3s
       retries: 10
 
-  redis:
-    image: redis:8.2.10
-    ports:
-      - "127.0.0.1:6379:6379"
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  garage:
-    image: dxflrs/garage:v2.4.1
+  flyway:
+    build: ./db
+    profiles: ["tools"]
     environment:
-      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?run scripts/dev.sh up}
-      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:?run scripts/dev.sh up}
-    ports:
-      - "127.0.0.1:3900:3900"
-      - "127.0.0.1:3903:3903"
-    volumes:
-      - ./dev/garage.toml:/etc/garage.toml:ro
-      - garage-meta:/var/lib/garage/meta
-      - garage-data:/var/lib/garage/data
-    healthcheck:
-      test: ["CMD", "/garage", "status"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/triedge
+      FLYWAY_USER: triedge
+      FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/dev.sh up}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   prometheus:
     image: prom/prometheus:v3.13.4
@@ -104,10 +85,125 @@ services:
       - tempo
       - loki
 
+  identity:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: docker/spring-service.Dockerfile
+      args:
+        SERVICE: identity
+    environment:
+      TRIEDGE_REGION: eu
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://postgres:5432/triedge
+      TRIEDGE_CLUSTERS_EU_USERNAME: identity_service
+      TRIEDGE_CLUSTERS_EU_PASSWORD: ${IDENTITY_DB_PASSWORD:?run scripts/dev.sh up}
+      TRIEDGE_IDENTITY_ETCD_URL: http://etcd:2379
+      TRIEDGE_IDENTITY_ALLOW_EPHEMERAL_KEY: "true"
+      TRIEDGE_IDENTITY_SECURE_COOKIES: "false"
+      TRIEDGE_IDENTITY_ALLOWED_ORIGINS: http://localhost:5173
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
+    depends_on:
+      postgres:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
+  edge-sidecar:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: docker/spring-service.Dockerfile
+      args:
+        SERVICE: edge-sidecar
+    environment:
+      TRIEDGE_REGION: eu
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://postgres:5432/triedge
+      TRIEDGE_CLUSTERS_EU_USERNAME: edge_sidecar
+      TRIEDGE_CLUSTERS_EU_PASSWORD: ${EDGE_SIDECAR_DB_PASSWORD:?run scripts/dev.sh up}
+      TRIEDGE_SIDECAR_ISSUER: tri-edge
+      TRIEDGE_SIDECAR_JWKS_URL: http://identity:8130/.well-known/jwks.json
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  k6:
+    profiles: ["tools"]
+    image: grafana/k6:1.3.0
+    command: ["run", "/scripts/gateway.js"]
+    environment:
+      GATEWAY_URL: http://envoy:8080
+      RATE: ${RATE:-200}
+      DURATION: ${DURATION:-2m}
+    volumes:
+      - ./tests/load:/scripts:ro
+
+  control-plane:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: docker/control-plane.Dockerfile
+    environment:
+      TRIEDGE_REGION: eu
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://postgres:5432/triedge
+      TRIEDGE_CLUSTERS_EU_USERNAME: control_plane
+      TRIEDGE_CLUSTERS_EU_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD:?run scripts/dev.sh up}
+      TRIEDGE_CONTROL_PLANE_ETCD_URL: http://etcd:2379
+      TRIEDGE_CONTROL_PLANE_SYSTEM_TENANTS_DIR: /etc/triedge/system-tenants
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
+    volumes:
+      - ./deploy/system-tenants:/etc/triedge/system-tenants:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
+  broker:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: docker/spring-service.Dockerfile
+      args:
+        SERVICE: broker
+    environment:
+      TRIEDGE_REGION: eu
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://postgres:5432/triedge
+      TRIEDGE_CLUSTERS_EU_USERNAME: broker
+      TRIEDGE_CLUSTERS_EU_PASSWORD: ${BROKER_DB_PASSWORD:?run scripts/dev.sh up}
+      TRIEDGE_BROKER_ETCD_URL: http://etcd:2379
+      TRIEDGE_BROKER_CONTROL_PLANE_URL: http://control-plane:8100
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
+    depends_on:
+      postgres:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
+  echo:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: docker/spring-service.Dockerfile
+      args:
+        SERVICE: echo
+
+  envoy:
+    profiles: ["app"]
+    image: envoyproxy/envoy:v1.39.4
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "warn"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./envoy/bootstrap.yaml:/etc/envoy/envoy.yaml:ro
+    depends_on:
+      - control-plane
+      - identity
+      - edge-sidecar
+      - broker
+      - echo
+
 volumes:
   postgres-data:
   etcd-data:
-  redis-data:
-  garage-meta:
-  garage-data:
   tempo-data:

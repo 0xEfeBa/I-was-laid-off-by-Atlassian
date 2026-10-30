@@ -1,0 +1,66 @@
+apiVersion: tri-edge/v1
+name: platform
+hosts: [localhost, api.localhost]
+backends:
+  - name: identity
+    address: identity:8130
+  - name: broker
+    address: broker:8110
+routes:
+  - path: /.well-known/jwks.json
+    match: exact
+    methods: [GET]
+    backend: identity
+  - path: /v1/signup
+    match: exact
+    methods: [POST]
+    backend: identity
+    rateLimit: { requests: 20, per: minute }
+  - path: /v1/login
+    match: exact
+    methods: [POST]
+    backend: identity
+    rateLimit: { requests: 20, per: minute }
+  - path: /v1/logout
+    match: exact
+    methods: [POST]
+    backend: identity
+  - path: /v1/token/refresh
+    match: exact
+    methods: [POST]
+    backend: identity
+  - path: /v1/tokens
+    backend: identity
+    auth: session
+    routeBy: home
+  - path: /v1/users
+    backend: identity
+    auth: session
+    routeBy: home
+  - path: /v1/admin/
+    backend: identity
+    auth: session
+  - path: /v2/
+    methods: [GET]
+    backend: broker
+    auth: any
+    scopes: [edge:read]
+    routeBy: home
+  - path: /v2/
+    methods: [PUT, PATCH, DELETE]
+    backend: broker
+    auth: any
+    scopes: [edge:write]
+    routeBy: home
+  - path: /api/tenants
+    methods: [GET]
+    backend: broker
+    auth: any
+    scopes: [edge:read]
+    routeBy: home
+  - path: /api/tenants
+    methods: [POST, PUT, DELETE]
+    backend: broker
+    auth: any
+    scopes: [edge:write]
+    routeBy: home

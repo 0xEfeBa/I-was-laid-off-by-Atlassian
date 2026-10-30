@@ -4,3 +4,14 @@ spring:
 
 server:
   port: 8130
+
+triedge:
+  region: eu
+  clusters:
+    eu:
+      url: jdbc:postgresql://localhost:5432/triedge
+      username: identity_service
+      password: ${IDENTITY_DB_PASSWORD:}
+  identity:
+    issuer: tri-edge
+    etcd-url: http://localhost:2379

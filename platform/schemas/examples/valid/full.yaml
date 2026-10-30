@@ -1,0 +1,32 @@
+apiVersion: tri-edge/v1
+name: shop
+regions: [eu, us]
+hosts: [shop.example-apps.net, www.shop.example-apps.net]
+backends:
+  - name: web
+    address: web.t-shop.svc:8080
+  - name: api
+    address: api.t-shop.svc:9000
+routes:
+  - path: /api/orders
+    methods: [GET]
+    backend: api
+    auth: any
+    scopes: [edge:read]
+    routeBy: home
+    timeoutSeconds: 10
+    rateLimit: { requests: 100, per: minute }
+  - path: /api/orders
+    methods: [POST, PUT, DELETE]
+    backend: api
+    auth: token
+    scopes: [edge:write]
+  - path: /health
+    match: exact
+    backend: web
+  - path: /
+    backend: web
+    auth: session
+hook:
+  address: authz.t-shop.svc:9002
+  failOpen: false

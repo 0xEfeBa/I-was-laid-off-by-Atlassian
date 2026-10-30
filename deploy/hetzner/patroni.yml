@@ -1,0 +1,41 @@
+namespace: /triedge/db/
+etcd3:
+  protocol: http
+restapi:
+  listen: 0.0.0.0:8008
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 5
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    synchronous_mode: quorum
+    synchronous_mode_strict: true
+    synchronous_node_count: 1
+    postgresql:
+      use_pg_rewind: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        wal_log_hints: "on"
+        max_wal_senders: 10
+        max_replication_slots: 10
+        max_connections: 200
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+  pg_hba:
+    - local all all trust
+    - host replication replicator 10.66.0.0/24 scram-sha-256
+    - host replication replicator 127.0.0.1/32 scram-sha-256
+    - host all all 10.66.0.0/24 scram-sha-256
+    - host all all 127.0.0.1/32 scram-sha-256
+postgresql:
+  data_dir: /var/lib/postgresql/data/patroni
+  bin_dir: /usr/lib/postgresql/17/bin
+  pgpass: /tmp/pgpass
+  authentication:
+    superuser:
+      username: postgres
+    replication:
+      username: replicator

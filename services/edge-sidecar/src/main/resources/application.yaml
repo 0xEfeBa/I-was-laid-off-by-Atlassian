@@ -4,3 +4,16 @@ spring:
 
 server:
   port: 8120
+
+triedge:
+  region: eu
+  clusters:
+    eu:
+      url: jdbc:postgresql://localhost:5432/triedge
+      username: edge_sidecar
+      password: ${EDGE_SIDECAR_DB_PASSWORD:}
+      max-pool-size: 3
+  sidecar:
+    grpc-port: 9001
+    issuer: tri-edge
+    jwks-url: http://localhost:8130/.well-known/jwks.json
