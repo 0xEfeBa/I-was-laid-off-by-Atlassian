@@ -3,7 +3,7 @@ WORKDIR /work
 COPY services/control-plane/build/libs/app.jar app.jar
 RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
 
-FROM envoyproxy/envoy:v1.39.4 AS envoy
+FROM envoyproxy/envoy:v1.40.1 AS envoy
 
 FROM eclipse-temurin:21-jre
 RUN groupadd --system app && useradd --system --gid app --uid 10001 app
