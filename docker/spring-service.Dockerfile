@@ -1,10 +1,10 @@
-FROM eclipse-temurin:21-jre AS extract
+FROM eclipse-temurin:24-jre AS extract
 WORKDIR /work
 ARG SERVICE
 COPY services/${SERVICE}/build/libs/app.jar app.jar
 RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:24-jre
 RUN groupadd --system app && useradd --system --gid app --uid 10001 app
 WORKDIR /app
 ENV LOGGING_STRUCTURED_FORMAT_CONSOLE=ecs
