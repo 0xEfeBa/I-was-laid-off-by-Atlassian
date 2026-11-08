@@ -6,15 +6,14 @@ import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.db.ClusterRoutingDataSource;
 import dev.triedge.common.db.HomeClusterFilter;
 import dev.triedge.common.etcd.EtcdClient;
+import dev.triedge.common.http.RestClients;
 import dev.triedge.common.outbox.OutboxWriter;
 import dev.triedge.common.queue.JobQueue;
 import dev.triedge.common.region.LeaderResolver;
-import java.net.http.HttpClient;
 import java.time.Clock;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -73,19 +72,14 @@ public class BrokerConfiguration {
     }
 
     @Bean
-    EtcdClient etcdClient(BrokerProperties properties) {
-        return new EtcdClient(RestClient.create(properties.etcdUrl()));
+    EtcdClient etcdClient(BrokerProperties properties, RestClient.Builder http) {
+        return new EtcdClient(RestClients.create(http, properties.etcdUrl(), properties.etcdTimeout()));
     }
 
     @Bean
-    ControlPlaneClient controlPlaneClient(BrokerProperties properties) {
-        HttpClient http = HttpClient.newBuilder().connectTimeout(properties.controlPlaneTimeout()).build();
-        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(http);
-        factory.setReadTimeout(properties.controlPlaneTimeout());
-        return new ControlPlaneClient(RestClient.builder()
-                .baseUrl(properties.controlPlaneUrl())
-                .requestFactory(factory)
-                .build());
+    ControlPlaneClient controlPlaneClient(BrokerProperties properties, RestClient.Builder http) {
+        return new ControlPlaneClient(
+                RestClients.create(http, properties.controlPlaneUrl(), properties.controlPlaneTimeout()));
     }
 
     @Bean

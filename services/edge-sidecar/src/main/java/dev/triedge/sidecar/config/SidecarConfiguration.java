@@ -3,6 +3,7 @@ package dev.triedge.sidecar.config;
 import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.etcd.EtcdClient;
+import dev.triedge.common.http.RestClients;
 import dev.triedge.common.region.LeaderResolver;
 import dev.triedge.sidecar.auth.JwksProvider;
 import dev.triedge.sidecar.auth.JwtValidator;
@@ -50,8 +51,9 @@ public class SidecarConfiguration {
     }
 
     @Bean
-    JwksProvider jwksProvider(SidecarProperties properties, Clock clock) {
-        return new JwksProvider(RestClient.create(), properties.jwksUrl(), properties.jwksMinRefresh(), clock);
+    JwksProvider jwksProvider(SidecarProperties properties, Clock clock, RestClient.Builder http) {
+        return new JwksProvider(RestClients.create(http, properties.jwksTimeout()), properties.jwksUrl(),
+                properties.jwksMinRefresh(), clock);
     }
 
     @Bean
@@ -66,11 +68,13 @@ public class SidecarConfiguration {
     }
 
     @Bean
-    PlatformRouting platformRouting(SidecarProperties properties, ClusterProperties clusters, Clock clock) {
+    PlatformRouting platformRouting(SidecarProperties properties, ClusterProperties clusters, Clock clock,
+            RestClient.Builder http) {
         if (properties.etcdUrl() == null) {
             return new PlatformRouting(clusters.region());
         }
-        LeaderResolver leaders = new LeaderResolver(new EtcdClient(RestClient.create(properties.etcdUrl())),
+        LeaderResolver leaders = new LeaderResolver(
+                new EtcdClient(RestClients.create(http, properties.etcdUrl(), properties.etcdTimeout())),
                 properties.leaderNamespace());
         return new PlatformRouting(clusters.region(),
                 new LeaderCache(leaders::leaderRegion, properties.leaderCacheTtl(), clock));

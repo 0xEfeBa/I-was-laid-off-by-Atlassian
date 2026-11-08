@@ -38,6 +38,7 @@ public final class TestProperties {
                 false,
                 List.of("http://app.test"),
                 1024,
-                1);
+                1,
+                Duration.ofSeconds(2));
     }
 }

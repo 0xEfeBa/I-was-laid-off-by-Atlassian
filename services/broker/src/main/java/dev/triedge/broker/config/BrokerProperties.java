@@ -13,5 +13,6 @@ public record BrokerProperties(
         @DefaultValue("platform") List<String> reservedNames,
         @DefaultValue("PT30S") Duration jobLock,
         @DefaultValue("PT5S") Duration controlPlaneTimeout,
-        @DefaultValue("/triedge/db") String leaderNamespace) {
+        @DefaultValue("/triedge/db") String leaderNamespace,
+        @DefaultValue("PT2S") Duration etcdTimeout) {
 }

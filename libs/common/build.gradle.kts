@@ -5,6 +5,7 @@ plugins {
 
 dependencies {
     api("org.springframework.boot:spring-boot-starter-webmvc")
+    api("org.springframework.boot:spring-boot-starter-restclient")
     api("org.springframework.boot:spring-boot-starter-actuator")
     api("org.springframework.boot:spring-boot-starter-opentelemetry")
     api("org.springframework:spring-jdbc")

@@ -3,6 +3,7 @@ package dev.triedge.controlplane.config;
 import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.etcd.EtcdClient;
+import dev.triedge.common.http.RestClients;
 import dev.triedge.controlplane.render.ConfigRenderer;
 import dev.triedge.controlplane.report.AppliedReporter;
 import dev.triedge.controlplane.source.SystemTenants;
@@ -75,8 +76,9 @@ public class ControlPlaneConfiguration {
 
     @Bean
     AppliedReporter appliedReporter(SnapshotPublisher publisher, AckTracker tracker, ControlPlaneProperties properties,
-            ClusterProperties clusters) {
-        return new AppliedReporter(publisher, tracker, new EtcdClient(RestClient.create(properties.etcdUrl())),
+            ClusterProperties clusters, RestClient.Builder http) {
+        return new AppliedReporter(publisher, tracker,
+                new EtcdClient(RestClients.create(http, properties.etcdUrl(), properties.etcdTimeout())),
                 clusters.region());
     }
 

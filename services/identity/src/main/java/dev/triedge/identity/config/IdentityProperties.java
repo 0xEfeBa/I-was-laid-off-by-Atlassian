@@ -18,5 +18,6 @@ public record IdentityProperties(
         @DefaultValue("true") boolean secureCookies,
         @DefaultValue List<String> allowedOrigins,
         @DefaultValue("65536") int argon2MemoryKib,
-        @DefaultValue("3") int argon2Iterations) {
+        @DefaultValue("3") int argon2Iterations,
+        @DefaultValue("PT2S") Duration etcdTimeout) {
 }

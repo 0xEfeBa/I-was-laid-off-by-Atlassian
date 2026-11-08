@@ -1,3 +1,9 @@
+spring:
+  task:
+    scheduling:
+      pool:
+        size: 4
+
 management:
   endpoints:
     web:
