@@ -11,8 +11,10 @@ import dev.triedge.common.queue.JobQueue;
 import dev.triedge.common.region.LeaderResolver;
 import dev.triedge.tenant.TenantSpecParser;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -26,6 +28,7 @@ public class TenantWorker {
 
     static final int BATCH = 20;
     static final String UNAVAILABLE = "The control plane could not validate this version";
+    static final String STOPPED = "The worker stopped before the job finished";
 
     private static final Logger log = LoggerFactory.getLogger(TenantWorker.class);
 
@@ -55,12 +58,17 @@ public class TenantWorker {
         this.region = clusterProperties.region();
     }
 
-    @Scheduled(fixedDelayString = "${triedge.broker.worker-interval:PT0.2S}")
+    @Scheduled(fixedDelayString = "${triedge.broker.worker-interval:PT0.2S}",
+            initialDelayString = "${triedge.broker.worker-interval:PT0.2S}")
     public int drain() {
         int processed = 0;
         for (String cluster : clusters.clusters()) {
-            if (leaders.leads(cluster, region)) {
-                processed += ClusterContext.call(cluster, this::drainCluster);
+            try {
+                if (leaders.leads(cluster, region)) {
+                    processed += ClusterContext.call(cluster, this::drainCluster);
+                }
+            } catch (RuntimeException e) {
+                log.warn("Could not process the jobs of cluster {}: {}", cluster, e.getMessage());
             }
         }
         return processed;
@@ -69,16 +77,79 @@ public class TenantWorker {
     private int drainCluster() {
         int processed = 0;
         while (processed < BATCH) {
-            Optional<Job> validation = jobs.claim(TenantService.VALIDATE_QUEUE);
-            validation.ifPresent(this::validate);
-            Optional<Job> deprovision = jobs.claim(TenantService.DEPROVISION_QUEUE);
-            deprovision.ifPresent(this::deprovision);
-            if (validation.isEmpty() && deprovision.isEmpty()) {
+            int round = abandonExpired(TenantService.VALIDATE_QUEUE)
+                    + abandonExpired(TenantService.DEPROVISION_QUEUE)
+                    + process(TenantService.VALIDATE_QUEUE, this::validate)
+                    + process(TenantService.DEPROVISION_QUEUE, this::deprovision);
+            if (round == 0) {
                 break;
             }
-            processed += (validation.isPresent() ? 1 : 0) + (deprovision.isPresent() ? 1 : 0);
+            processed += round;
         }
         return processed;
+    }
+
+    private int process(String queue, Consumer<Job> handler) {
+        Optional<Job> claimed = jobs.claim(queue);
+        if (claimed.isEmpty()) {
+            return 0;
+        }
+        Job job = claimed.get();
+        try {
+            handler.accept(job);
+        } catch (RuntimeException e) {
+            log.warn("Job {} on {} failed on attempt {} of {}: {}", job.id(), queue, job.attempts(),
+                    job.maxAttempts(), e.getMessage());
+            String error = String.valueOf(e.getMessage());
+            Optional<Tenant> rejected = transactions.execute(status ->
+                    jobs.fail(job, error) && job.attempts() >= job.maxAttempts()
+                            ? abandon(job, error)
+                            : Optional.<Tenant>empty());
+            Objects.requireNonNullElse(rejected, Optional.<Tenant>empty()).ifPresent(this::releaseAfterRejection);
+        }
+        return 1;
+    }
+
+    private int abandonExpired(String queue) {
+        Optional<Optional<Tenant>> expired = transactions.execute(status ->
+                jobs.expire(queue).map(job -> abandon(job, STOPPED)));
+        if (expired == null || expired.isEmpty()) {
+            return 0;
+        }
+        expired.get().ifPresent(this::releaseAfterRejection);
+        return 1;
+    }
+
+    private Optional<Tenant> abandon(Job job, String error) {
+        Optional<JsonNode> payload = payloadOf(job);
+        Optional<UUID> tenantId = payload.map(p -> UUID.fromString(p.get("tenantId").asString()));
+        if (tenantId.isEmpty()) {
+            log.error("Gave up on job {} on {}, which names no tenant", job.id(), job.queue());
+            return Optional.empty();
+        }
+        if (TenantService.DEPROVISION_QUEUE.equals(job.queue())) {
+            tenants.lockLive(tenantId.get()).ifPresent(t -> tenants.finishOperation(tenantId.get(),
+                    ServiceInstance.FAILED, "The tenant could not be removed: " + error));
+            log.warn("Gave up removing tenant {}: {}", tenantId.get(), error);
+            return Optional.empty();
+        }
+        JsonNode version = payload.get().get("version");
+        if (version == null) {
+            log.error("Gave up on job {} on {}, which names no version", job.id(), job.queue());
+            return Optional.empty();
+        }
+        log.warn("Gave up validating tenant {} version {}: {}", tenantId.get(), version.asInt(), error);
+        return markRejected(tenantId.get(), version.asInt(), List.of("Validation did not finish: " + error));
+    }
+
+    private Optional<JsonNode> payloadOf(Job job) {
+        try {
+            JsonNode payload = json.readTree(job.payload());
+            UUID.fromString(payload.get("tenantId").asString());
+            return Optional.of(payload);
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
     }
 
     private void validate(Job job) {
@@ -127,23 +198,32 @@ public class TenantWorker {
 
     private void reject(Job job, UUID tenantId, int version, List<String> errors) {
         Optional<Tenant> tenant = transactions.execute(status -> {
-            Optional<Tenant> live = tenants.lockLive(tenantId);
-            live.ifPresent(t -> {
-                tenants.setStatus(tenantId, version, "REJECTED", String.join("\n", errors));
-                tenants.finishOperation(tenantId, ServiceInstance.FAILED,
-                        "Version " + version + " was rejected: " + String.join("; ", errors));
-            });
+            Optional<Tenant> live = markRejected(tenantId, version, errors);
             completeOrRollBack(job);
             return live;
         });
         if (tenant != null && tenant.isPresent()) {
             log.info("Tenant {} version {} rejected", tenant.get().name(), version);
-            Integer active = tenant.get().activeVersion();
-            if (active == null) {
-                releaseHosts(tenantId, List.of());
-            } else {
-                releaseUnusedHosts(tenantId, active);
-            }
+            releaseAfterRejection(tenant.get());
+        }
+    }
+
+    private Optional<Tenant> markRejected(UUID tenantId, int version, List<String> errors) {
+        Optional<Tenant> live = tenants.lockLive(tenantId);
+        live.ifPresent(t -> {
+            tenants.setStatus(tenantId, version, "REJECTED", String.join("\n", errors));
+            tenants.finishOperation(tenantId, ServiceInstance.FAILED,
+                    "Version " + version + " was rejected: " + String.join("; ", errors));
+        });
+        return live;
+    }
+
+    private void releaseAfterRejection(Tenant tenant) {
+        Integer active = tenant.activeVersion();
+        if (active == null) {
+            releaseHosts(tenant.id(), List.of());
+        } else {
+            releaseUnusedHosts(tenant.id(), active);
         }
     }
 

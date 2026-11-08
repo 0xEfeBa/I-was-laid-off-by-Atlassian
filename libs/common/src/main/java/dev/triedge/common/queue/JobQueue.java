@@ -34,16 +34,25 @@ public class JobQueue {
         this.lockSeconds = lockDuration.toMillis() / 1000.0;
         String table = schema + ".job_queue";
         this.enqueueSql = """
-                INSERT INTO %s (queue, dedup_key, payload)
+                INSERT INTO %s AS existing (queue, dedup_key, payload)
                 VALUES (:queue, :dedupKey, CAST(:payload AS jsonb))
-                ON CONFLICT (queue, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
+                ON CONFLICT (queue, dedup_key) WHERE dedup_key IS NOT NULL
+                DO UPDATE SET status = 'PENDING', attempts = 0, run_after = now(), locked_until = NULL,
+                              last_error = NULL, payload = EXCLUDED.payload, updated_at = now()
+                WHERE existing.status = 'FAILED'
                 """.formatted(table);
         this.expireSql = """
-                UPDATE %s
+                UPDATE %1$s
                 SET status = 'FAILED', locked_until = NULL, updated_at = now(),
                     last_error = coalesce(last_error, 'Lock expired on the final attempt')
-                WHERE queue = :queue AND status = 'RUNNING'
-                  AND locked_until < now() AND attempts >= max_attempts
+                WHERE id = (
+                    SELECT id FROM %1$s
+                    WHERE queue = :queue AND status = 'RUNNING'
+                      AND locked_until < now() AND attempts >= max_attempts
+                    ORDER BY id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1)
+                RETURNING id, queue, payload::text AS payload, attempts, max_attempts
                 """.formatted(table);
         this.claimSql = """
                 UPDATE %1$s
@@ -88,10 +97,16 @@ public class JobQueue {
     }
 
     public Optional<Job> claim(String queue) {
-        jdbc.sql(expireSql).param("queue", queue).update();
         return jdbc.sql(claimSql)
                 .param("queue", queue)
                 .param("lockSeconds", lockSeconds)
+                .query(JobQueue::toJob)
+                .optional();
+    }
+
+    public Optional<Job> expire(String queue) {
+        return jdbc.sql(expireSql)
+                .param("queue", queue)
                 .query(JobQueue::toJob)
                 .optional();
     }

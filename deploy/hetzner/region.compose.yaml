@@ -114,13 +114,13 @@ services:
         SERVICE: edge-sidecar
     environment:
       TRIEDGE_REGION: ${REGION}
-      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://${EU_IP}:5431,${US_IP}:5431,${AP_IP}:5431/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://${SELF}:5431,${EU_IP}:5431,${US_IP}:5431,${AP_IP}:5431/triedge?targetServerType=any
       TRIEDGE_CLUSTERS_EU_USERNAME: edge_sidecar
       TRIEDGE_CLUSTERS_EU_PASSWORD: ${EDGE_SIDECAR_DB_PASSWORD}
-      TRIEDGE_CLUSTERS_US_URL: jdbc:postgresql://${EU_IP}:5432,${US_IP}:5432,${AP_IP}:5432/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_US_URL: jdbc:postgresql://${SELF}:5432,${EU_IP}:5432,${US_IP}:5432,${AP_IP}:5432/triedge?targetServerType=any
       TRIEDGE_CLUSTERS_US_USERNAME: edge_sidecar
       TRIEDGE_CLUSTERS_US_PASSWORD: ${EDGE_SIDECAR_DB_PASSWORD}
-      TRIEDGE_CLUSTERS_AP_URL: jdbc:postgresql://${EU_IP}:5433,${US_IP}:5433,${AP_IP}:5433/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_AP_URL: jdbc:postgresql://${SELF}:5433,${EU_IP}:5433,${US_IP}:5433,${AP_IP}:5433/triedge?targetServerType=any
       TRIEDGE_CLUSTERS_AP_USERNAME: edge_sidecar
       TRIEDGE_CLUSTERS_AP_PASSWORD: ${EDGE_SIDECAR_DB_PASSWORD}
       TRIEDGE_CLUSTERS_EU_MAX_POOL_SIZE: 3
@@ -162,13 +162,13 @@ services:
       dockerfile: docker/control-plane.Dockerfile
     environment:
       TRIEDGE_REGION: ${REGION}
-      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://${EU_IP}:5431,${US_IP}:5431,${AP_IP}:5431/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://${SELF}:5431,${EU_IP}:5431,${US_IP}:5431,${AP_IP}:5431/triedge?targetServerType=any
       TRIEDGE_CLUSTERS_EU_USERNAME: control_plane
       TRIEDGE_CLUSTERS_EU_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD}
-      TRIEDGE_CLUSTERS_US_URL: jdbc:postgresql://${EU_IP}:5432,${US_IP}:5432,${AP_IP}:5432/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_US_URL: jdbc:postgresql://${SELF}:5432,${EU_IP}:5432,${US_IP}:5432,${AP_IP}:5432/triedge?targetServerType=any
       TRIEDGE_CLUSTERS_US_USERNAME: control_plane
       TRIEDGE_CLUSTERS_US_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD}
-      TRIEDGE_CLUSTERS_AP_URL: jdbc:postgresql://${EU_IP}:5433,${US_IP}:5433,${AP_IP}:5433/triedge?targetServerType=primary
+      TRIEDGE_CLUSTERS_AP_URL: jdbc:postgresql://${SELF}:5433,${EU_IP}:5433,${US_IP}:5433,${AP_IP}:5433/triedge?targetServerType=any
       TRIEDGE_CLUSTERS_AP_USERNAME: control_plane
       TRIEDGE_CLUSTERS_AP_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD}
       TRIEDGE_CLUSTERS_EU_MAX_POOL_SIZE: 3

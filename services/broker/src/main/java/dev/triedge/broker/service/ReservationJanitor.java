@@ -44,7 +44,8 @@ public class ReservationJanitor {
         this.region = clusters.region();
     }
 
-    @Scheduled(fixedDelayString = "${triedge.broker.janitor-interval:PT5M}")
+    @Scheduled(fixedDelayString = "${triedge.broker.janitor-interval:PT5M}",
+            initialDelayString = "${triedge.broker.janitor-interval:PT5M}")
     public int releaseAbandoned() {
         Instant cutoff = clock.instant().minus(GRACE);
         int released = sweep(TenantReservations.NAMES, reservations.names(), cutoff, false)

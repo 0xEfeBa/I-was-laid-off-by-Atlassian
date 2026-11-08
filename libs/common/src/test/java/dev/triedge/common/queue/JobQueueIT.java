@@ -130,11 +130,44 @@ class JobQueueIT {
         shortLocks.enqueue(QUEUE, null, "{}");
         jdbc.sql("UPDATE platform.job_queue SET max_attempts = 1").update();
 
-        shortLocks.claim(QUEUE).orElseThrow();
+        Job abandoned = shortLocks.claim(QUEUE).orElseThrow();
+        assertThat(shortLocks.expire(QUEUE)).as("the lock is still held").isEmpty();
         Thread.sleep(400);
 
         assertThat(shortLocks.claim(QUEUE)).isEmpty();
-        assertThat(count("status = 'FAILED'")).isEqualTo(1);
+        assertThat(shortLocks.expire(QUEUE)).hasValueSatisfying(job -> {
+            assertThat(job.id()).isEqualTo(abandoned.id());
+            assertThat(job.attempts()).isEqualTo(1);
+        });
+        assertThat(shortLocks.expire(QUEUE)).isEmpty();
+        assertThat(count("status = 'FAILED' AND last_error = 'Lock expired on the final attempt'")).isEqualTo(1);
+    }
+
+    @Test
+    void aFailedJobCanBeEnqueuedAgain() {
+        queue.enqueue(QUEUE, "repo-1", "{\"try\":1}");
+        jdbc.sql("UPDATE platform.job_queue SET max_attempts = 1").update();
+        Job first = queue.claim(QUEUE).orElseThrow();
+        queue.fail(first, "boom");
+
+        assertThat(queue.enqueue(QUEUE, "repo-1", "{\"try\":2}")).isTrue();
+        assertThat(queue.enqueue(QUEUE, "repo-1", "{\"try\":3}")).as("an active job is not replaced").isFalse();
+
+        assertThat(queue.claim(QUEUE)).hasValueSatisfying(job -> {
+            assertThat(job.id()).isEqualTo(first.id());
+            assertThat(job.attempts()).isEqualTo(1);
+            assertThat(job.payload()).isEqualTo("{\"try\": 2}");
+        });
+        assertThat(count("1 = 1")).isEqualTo(1);
+    }
+
+    @Test
+    void aFinishedJobIsNotEnqueuedAgain() {
+        queue.enqueue(QUEUE, "repo-1", "{}");
+        queue.complete(queue.claim(QUEUE).orElseThrow());
+
+        assertThat(queue.enqueue(QUEUE, "repo-1", "{}")).isFalse();
+        assertThat(count("status = 'DONE'")).isEqualTo(1);
     }
 
     @Test

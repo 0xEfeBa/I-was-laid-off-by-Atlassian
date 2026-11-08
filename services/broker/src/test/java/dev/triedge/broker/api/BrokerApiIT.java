@@ -212,6 +212,77 @@ class BrokerApiIT {
     }
 
     @Test
+    void aBrokenJobDoesNotStopTheOthers() throws Exception {
+        String name = "poison-" + suffix;
+        long broken = jdbc.sql("""
+                INSERT INTO platform.job_queue (queue, payload) VALUES ('tenant-validate', '{"broken":true}')
+                RETURNING id
+                """).query(Long.class).single();
+
+        mvc.perform(async(put(INSTANCES + name), owner).content(provision(name, name + ".test")))
+                .andExpect(status().isAccepted());
+        worker.drain();
+
+        lastOperation(name, owner).andExpect(jsonPath("$.state").value("succeeded"));
+        assertThat(job(broken, "status")).isEqualTo("PENDING");
+        assertThat(job(broken, "last_error")).isNotBlank();
+
+        jdbc.sql("UPDATE platform.job_queue SET attempts = max_attempts - 1, run_after = now() WHERE id = :id")
+                .param("id", broken).update();
+        worker.drain();
+        assertThat(job(broken, "status")).isEqualTo("FAILED");
+    }
+
+    @Test
+    void anAbandonedDeletionFailsAndCanBeRetried() throws Exception {
+        String name = "stuck-" + suffix;
+        String remove = INSTANCES + name + "?service_id=tri-edge-tenant&plan_id=standard";
+        mvc.perform(async(put(INSTANCES + name), owner).content(provision(name, name + ".test")))
+                .andExpect(status().isAccepted());
+        worker.drain();
+        mvc.perform(async(delete(remove), owner)).andExpect(status().isAccepted());
+
+        jdbc.sql("""
+                UPDATE platform.job_queue
+                SET status = 'RUNNING', attempts = max_attempts, locked_until = now() - interval '1 second'
+                WHERE queue = 'tenant-deprovision'
+                  AND payload ->> 'tenantId' = (SELECT id::text FROM platform.tenants WHERE name = :name)
+                """).param("name", name).update();
+        worker.drain();
+
+        lastOperation(name, owner)
+                .andExpect(jsonPath("$.state").value("failed"))
+                .andExpect(jsonPath("$.description").value(Matchers.containsString("could not be removed")));
+        mvc.perform(as(get("/api/tenants/" + name), owner)).andExpect(status().isOk());
+
+        mvc.perform(async(delete(remove), owner)).andExpect(status().isAccepted());
+        worker.drain();
+        lastOperation(name, owner).andExpect(status().isGone());
+    }
+
+    @Test
+    void anAbandonedValidationRejectsTheVersion() throws Exception {
+        String name = "lost-" + suffix;
+        mvc.perform(async(put(INSTANCES + name), owner).content(provision(name, name + ".test")))
+                .andExpect(status().isAccepted());
+
+        jdbc.sql("""
+                UPDATE platform.job_queue
+                SET status = 'RUNNING', attempts = max_attempts, locked_until = now() - interval '1 second'
+                WHERE queue = 'tenant-validate'
+                  AND payload ->> 'tenantId' = (SELECT id::text FROM platform.tenants WHERE name = :name)
+                """).param("name", name).update();
+        worker.drain();
+
+        lastOperation(name, owner)
+                .andExpect(jsonPath("$.state").value("failed"))
+                .andExpect(jsonPath("$.description").value(Matchers.containsString("did not finish")));
+        mvc.perform(as(get("/api/tenants/" + name), owner))
+                .andExpect(jsonPath("$.versions[0].state").value("REJECTED"));
+        assertThat(etcd.get(TenantReservations.HOSTS + name + ".test")).isEmpty();
+    }
+
+    @Test
     void badRequestsAreRefused() throws Exception {
         String name = "bad-" + suffix;
 
@@ -282,6 +353,11 @@ class BrokerApiIT {
 
     private ResultActions lastOperation(String name, UUID caller) throws Exception {
         return mvc.perform(as(get(INSTANCES + name + "/last_operation"), caller));
+    }
+
+    private String job(long id, String column) {
+        return jdbc.sql("SELECT " + column + " FROM platform.job_queue WHERE id = :id")
+                .param("id", id).query(String.class).single();
     }
 
     private List<String> events(String name) {
