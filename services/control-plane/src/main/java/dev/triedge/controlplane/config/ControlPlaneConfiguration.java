@@ -50,7 +50,7 @@ public class ControlPlaneConfiguration {
     @Bean
     ConfigRenderer configRenderer(ClusterProperties clusters, ControlPlaneProperties properties) {
         return new ConfigRenderer(clusters.region(), properties.listenerPort(), properties.sidecarHost(),
-                properties.sidecarPort(), properties.remoteRegions());
+                properties.sidecarPort(), properties.remoteRegions(), properties.peerCidrs());
     }
 
     @Bean

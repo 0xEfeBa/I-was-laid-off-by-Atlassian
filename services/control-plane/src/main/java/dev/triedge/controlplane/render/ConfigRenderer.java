@@ -13,6 +13,7 @@ import io.envoyproxy.envoy.config.cluster.v3.Cluster;
 import io.envoyproxy.envoy.config.core.v3.Address;
 import io.envoyproxy.envoy.config.core.v3.AggregatedConfigSource;
 import io.envoyproxy.envoy.config.core.v3.ApiVersion;
+import io.envoyproxy.envoy.config.core.v3.CidrRange;
 import io.envoyproxy.envoy.config.core.v3.ConfigSource;
 import io.envoyproxy.envoy.config.core.v3.GrpcService;
 import io.envoyproxy.envoy.config.core.v3.HeaderValue;
@@ -27,6 +28,7 @@ import io.envoyproxy.envoy.config.endpoint.v3.LbEndpoint;
 import io.envoyproxy.envoy.config.endpoint.v3.LocalityLbEndpoints;
 import io.envoyproxy.envoy.config.listener.v3.Filter;
 import io.envoyproxy.envoy.config.listener.v3.FilterChain;
+import io.envoyproxy.envoy.config.listener.v3.FilterChainMatch;
 import io.envoyproxy.envoy.config.listener.v3.Listener;
 import io.envoyproxy.envoy.config.route.v3.DirectResponseAction;
 import io.envoyproxy.envoy.config.route.v3.RateLimit;
@@ -68,6 +70,8 @@ public class ConfigRenderer {
     public static final String SIDECAR_CLUSTER = "platform.edge-sidecar";
     public static final String AUTH_METADATA = "triedge.auth";
     public static final String TARGET_REGION_HEADER = "x-target-region";
+    public static final String HOP_HEADER = "x-triedge-hop";
+    public static final String SERVED_BY_HEADER = "x-served-by-region";
 
     private static final String EXT_AUTHZ = "envoy.filters.http.ext_authz";
     private static final String LOCAL_RATE_LIMIT = "envoy.filters.http.local_ratelimit";
@@ -80,6 +84,7 @@ public class ConfigRenderer {
     private final String sidecarHost;
     private final int sidecarPort;
     private final Map<String, String> remoteRegions;
+    private final List<String> peerCidrs;
 
     public ConfigRenderer(String region, int listenerPort, String sidecarHost, int sidecarPort) {
         this(region, listenerPort, sidecarHost, sidecarPort, Map.of());
@@ -87,12 +92,18 @@ public class ConfigRenderer {
 
     public ConfigRenderer(String region, int listenerPort, String sidecarHost, int sidecarPort,
             Map<String, String> remoteRegions) {
+        this(region, listenerPort, sidecarHost, sidecarPort, remoteRegions, List.of());
+    }
+
+    public ConfigRenderer(String region, int listenerPort, String sidecarHost, int sidecarPort,
+            Map<String, String> remoteRegions, List<String> peerCidrs) {
         this.region = region;
         this.listenerPort = listenerPort;
         this.sidecarHost = sidecarHost;
         this.sidecarPort = sidecarPort;
         this.remoteRegions = new TreeMap<>(remoteRegions);
         this.remoteRegions.remove(region);
+        this.peerCidrs = List.copyOf(peerCidrs);
     }
 
     public EnvoyResources render(Collection<ActiveTenant> tenants, boolean inlineRoutes) {
@@ -100,7 +111,13 @@ public class ConfigRenderer {
         RouteConfiguration routes = routeConfiguration(sorted);
         List<Cluster> clusters = new ArrayList<>();
         clusters.add(sidecarCluster());
+        for (String remote : remoteRegions.keySet()) {
+            clusters.add(backendCluster(edgeCluster(remote), remoteHost(remote, "envoy"), listenerPort));
+        }
         for (ActiveTenant tenant : sorted) {
+            if (!tenant.system() && !tenant.spec().regions().contains(region)) {
+                continue;
+            }
             for (TenantSpec.Backend backend : tenant.spec().backends()) {
                 clusters.add(backendCluster(clusterName(tenant.name(), backend.name()), backend.host(), backend.port()));
                 for (String remote : remoteRegionsOf(tenant)) {
@@ -119,30 +136,65 @@ public class ConfigRenderer {
         return "tenant." + tenant + "." + backend;
     }
 
+    public static String edgeCluster(String region) {
+        return "edge." + region;
+    }
+
     RouteConfiguration routeConfiguration(List<ActiveTenant> tenants) {
         RouteConfiguration.Builder config = RouteConfiguration.newBuilder()
                 .setName(ROUTE_CONFIGURATION)
                 .setValidateClusters(BoolValue.of(false))
-                .addResponseHeadersToAdd(HeaderValueOption.newBuilder()
-                        .setHeader(HeaderValue.newBuilder().setKey("x-served-by-region").setValue(region))
-                        .setAppendAction(HeaderValueOption.HeaderAppendAction.OVERWRITE_IF_EXISTS_OR_ADD));
+                .addResponseHeadersToAdd(servedBy(HeaderValueOption.HeaderAppendAction.ADD_IF_ABSENT));
         for (ActiveTenant tenant : tenants) {
             VirtualHost.Builder host = VirtualHost.newBuilder()
                     .setName("tenant." + tenant.name())
                     .addAllDomains(tenant.spec().hosts())
                     .addRoutes(notFound("/internal/"));
-            for (TenantSpec.Route route : tenant.spec().routes()) {
-                if (route.routeBy() == TenantSpec.RouteBy.HOME) {
-                    for (String remote : remoteRegionsOf(tenant)) {
-                        host.addRoutes(route(tenant, route, remote));
-                    }
-                }
-                host.addRoutes(route(tenant, route, null));
+            if (tenant.system()) {
+                addSystemRoutes(host, tenant);
+            } else {
+                addUserRoutes(host, tenant);
             }
             config.addVirtualHosts(host);
         }
         config.addVirtualHosts(VirtualHost.newBuilder().setName("unknown-host").addDomains("*").addRoutes(notFound("/")));
         return config.build();
+    }
+
+    private void addSystemRoutes(VirtualHost.Builder host, ActiveTenant tenant) {
+        for (TenantSpec.Route route : tenant.spec().routes()) {
+            String cluster = clusterName(tenant.name(), route.backend());
+            if (route.routeBy() == TenantSpec.RouteBy.HOME) {
+                for (String remote : remoteRegionsOf(tenant)) {
+                    host.addRoutes(route(tenant, route, remote, cluster + "." + remote, false));
+                }
+            }
+            host.addRoutes(route(tenant, route, null, cluster, false));
+        }
+    }
+
+    private void addUserRoutes(VirtualHost.Builder host, ActiveTenant tenant) {
+        List<String> remotes = tenant.spec().regions().stream().filter(remoteRegions::containsKey).toList();
+        boolean servedHere = tenant.spec().regions().contains(region);
+        if (!servedHere && remotes.isEmpty()) {
+            host.addRoutes(directResponse("/", 503));
+            return;
+        }
+        for (TenantSpec.Route route : tenant.spec().routes()) {
+            if (!servedHere) {
+                host.addRoutes(route(tenant, route, null, edgeCluster(remotes.getFirst()), true));
+                continue;
+            }
+            if (route.routeBy() == TenantSpec.RouteBy.HOME) {
+                for (String remote : remotes) {
+                    host.addRoutes(route(tenant, route, remote, edgeCluster(remote), true));
+                }
+            }
+            host.addRoutes(route(tenant, route, null, clusterName(tenant.name(), route.backend()), false));
+        }
+        if (!servedHere) {
+            host.addRoutes(directResponse("/", 508));
+        }
     }
 
     private List<String> remoteRegionsOf(ActiveTenant tenant) {
@@ -157,7 +209,8 @@ public class ConfigRenderer {
         return template.contains("{host}") ? template.replace("{host}", backendHost) : template;
     }
 
-    private Route route(ActiveTenant tenant, TenantSpec.Route route, @Nullable String remote) {
+    private Route route(ActiveTenant tenant, TenantSpec.Route route, @Nullable String targetRegion, String cluster,
+            boolean forwarded) {
         RouteMatch.Builder match = RouteMatch.newBuilder();
         if (route.match() == TenantSpec.Match.EXACT) {
             match.setPath(route.path());
@@ -170,12 +223,13 @@ public class ConfigRenderer {
                     .setStringMatch(StringMatcher.newBuilder().setSafeRegex(RegexMatcher.newBuilder()
                             .setRegex(String.join("|", route.methods())))));
         }
-        String cluster = clusterName(tenant.name(), route.backend());
-        if (remote != null) {
+        if (targetRegion != null) {
             match.addHeaders(HeaderMatcher.newBuilder()
                     .setName(TARGET_REGION_HEADER)
-                    .setStringMatch(StringMatcher.newBuilder().setExact(remote)));
-            cluster = cluster + "." + remote;
+                    .setStringMatch(StringMatcher.newBuilder().setExact(targetRegion)));
+        }
+        if (forwarded) {
+            match.addHeaders(HeaderMatcher.newBuilder().setName(HOP_HEADER).setPresentMatch(true).setInvertMatch(true));
         }
         RouteAction.Builder action = RouteAction.newBuilder()
                 .setCluster(cluster)
@@ -184,6 +238,13 @@ public class ConfigRenderer {
                 .setMatch(match)
                 .setRoute(action)
                 .setMetadata(Metadata.newBuilder().putFilterMetadata(AUTH_METADATA, authRule(tenant, route)));
+        if (forwarded) {
+            built.addRequestHeadersToAdd(HeaderValueOption.newBuilder()
+                    .setHeader(HeaderValue.newBuilder().setKey(HOP_HEADER).setValue(region))
+                    .setAppendAction(HeaderValueOption.HeaderAppendAction.OVERWRITE_IF_EXISTS_OR_ADD));
+        } else {
+            built.addResponseHeadersToAdd(servedBy(HeaderValueOption.HeaderAppendAction.OVERWRITE_IF_EXISTS_OR_ADD));
+        }
         if (route.rateLimit() != null) {
             built.putTypedPerFilterConfig(LOCAL_RATE_LIMIT, Any.pack(perClientLimit(route.rateLimit())));
         }
@@ -245,20 +306,59 @@ public class ConfigRenderer {
         return rule.build();
     }
 
+    private HeaderValueOption servedBy(HeaderValueOption.HeaderAppendAction action) {
+        return HeaderValueOption.newBuilder()
+                .setHeader(HeaderValue.newBuilder().setKey(SERVED_BY_HEADER).setValue(region))
+                .setAppendAction(action)
+                .build();
+    }
+
     private static Route notFound(String prefix) {
+        return directResponse(prefix, 404);
+    }
+
+    private static Route directResponse(String prefix, int status) {
         return Route.newBuilder()
                 .setMatch(RouteMatch.newBuilder().setPrefix(prefix))
-                .setDirectResponse(DirectResponseAction.newBuilder().setStatus(404))
+                .setDirectResponse(DirectResponseAction.newBuilder().setStatus(status))
                 .putTypedPerFilterConfig(EXT_AUTHZ, Any.pack(ExtAuthzPerRoute.newBuilder().setDisabled(true).build()))
                 .build();
     }
 
     private Listener listener(@Nullable RouteConfiguration inlineRoutes) {
+        Listener.Builder listener = Listener.newBuilder()
+                .setName(LISTENER)
+                .setAddress(Address.newBuilder().setSocketAddress(SocketAddress.newBuilder()
+                        .setAddress("0.0.0.0")
+                        .setPortValue(listenerPort)))
+                .addFilterChains(filterChain(manager(inlineRoutes, 0)));
+        if (!peerCidrs.isEmpty()) {
+            FilterChainMatch.Builder peers = FilterChainMatch.newBuilder();
+            for (String cidr : peerCidrs) {
+                String[] parts = cidr.split("/", 2);
+                peers.addSourcePrefixRanges(CidrRange.newBuilder()
+                        .setAddressPrefix(parts[0])
+                        .setPrefixLen(UInt32Value.of(parts.length == 2 ? Integer.parseInt(parts[1]) : 32)));
+            }
+            listener.addFilterChains(filterChain(manager(inlineRoutes, 1)).toBuilder().setFilterChainMatch(peers));
+        }
+        return listener.build();
+    }
+
+    private static FilterChain filterChain(HttpConnectionManager manager) {
+        return FilterChain.newBuilder().addFilters(Filter.newBuilder()
+                        .setName("envoy.filters.network.http_connection_manager")
+                        .setTypedConfig(Any.pack(manager)))
+                .build();
+    }
+
+    private HttpConnectionManager manager(@Nullable RouteConfiguration inlineRoutes, int trustedHops) {
         HttpConnectionManager.Builder manager = HttpConnectionManager.newBuilder()
                 .setStatPrefix(LISTENER)
                 .setCodecType(HttpConnectionManager.CodecType.AUTO)
                 .setStripAnyHostPort(true)
                 .setUseRemoteAddress(BoolValue.of(true))
+                .setXffNumTrustedHops(trustedHops)
                 .addHttpFilters(HttpFilter.newBuilder().setName(LOCAL_RATE_LIMIT).setTypedConfig(Any.pack(
                         LocalRateLimit.newBuilder().setStatPrefix(RATE_LIMIT_STATS).build())))
                 .addHttpFilters(HttpFilter.newBuilder().setName(EXT_AUTHZ).setTypedConfig(Any.pack(ExtAuthz.newBuilder()
@@ -283,15 +383,7 @@ public class ConfigRenderer {
                             .setAds(AggregatedConfigSource.getDefaultInstance())
                             .setResourceApiVersion(ApiVersion.V3)));
         }
-        return Listener.newBuilder()
-                .setName(LISTENER)
-                .setAddress(Address.newBuilder().setSocketAddress(SocketAddress.newBuilder()
-                        .setAddress("0.0.0.0")
-                        .setPortValue(listenerPort)))
-                .addFilterChains(FilterChain.newBuilder().addFilters(Filter.newBuilder()
-                        .setName("envoy.filters.network.http_connection_manager")
-                        .setTypedConfig(Any.pack(manager.build()))))
-                .build();
+        return manager.build();
     }
 
     private Cluster sidecarCluster() {

@@ -199,6 +199,80 @@ class ConfigRendererTest {
                 .getSocketAddress().getAddress()).isEqualTo("10.66.0.3");
     }
 
+    private final ConfigRenderer threeRegions = new ConfigRenderer("eu", 8080, "edge-sidecar", 9001,
+            Map.of("us", "10.66.0.2", "ap", "10.66.0.3"), List.of("10.66.0.0/24"));
+
+    @Test
+    void userTenantsOutsideTheirRegionsAreForwardedToTheFirstListedRegion() {
+        TenantSpec blog = new TenantSpec("blog", List.of("us", "ap"), List.of("blog.test"),
+                List.of(new TenantSpec.Backend("web", "web.t-blog.svc", 80)),
+                List.of(new TenantSpec.Route("/", TenantSpec.Match.PREFIX, List.of(), "web",
+                        TenantSpec.Auth.NONE, List.of(), TenantSpec.RouteBy.LOCAL, null, null)),
+                null);
+
+        EnvoyResources resources = threeRegions.render(List.of(TestTenants.tenant("blog", 1, blog)), false);
+        VirtualHost host = resources.routes().getFirst().getVirtualHosts(0);
+
+        assertThat(host.getRoutesList()).extracting(r -> r.getRoute().getCluster())
+                .containsExactly("", "edge.us", "");
+        Route forward = host.getRoutes(1);
+        assertThat(forward.getMatch().getHeaders(0).getName()).isEqualTo(ConfigRenderer.HOP_HEADER);
+        assertThat(forward.getMatch().getHeaders(0).getInvertMatch()).isTrue();
+        assertThat(forward.getRequestHeadersToAdd(0).getHeader().getKey()).isEqualTo(ConfigRenderer.HOP_HEADER);
+        assertThat(forward.getRequestHeadersToAdd(0).getHeader().getValue()).isEqualTo("eu");
+        assertThat(forward.getResponseHeadersToAddList()).isEmpty();
+        assertThat(host.getRoutes(2).getDirectResponse().getStatus()).isEqualTo(508);
+        assertThat(resources.clusters()).extracting(Cluster::getName)
+                .contains("edge.us", "edge.ap").doesNotContain("edge.eu", "tenant.blog.web");
+        Cluster edge = resources.clusters().stream().filter(c -> c.getName().equals("edge.us")).findFirst().orElseThrow();
+        assertThat(edge.getLoadAssignment().getEndpoints(0).getLbEndpoints(0).getEndpoint().getAddress()
+                .getSocketAddress().getAddress()).isEqualTo("10.66.0.2");
+        assertThat(edge.getLoadAssignment().getEndpoints(0).getLbEndpoints(0).getEndpoint().getAddress()
+                .getSocketAddress().getPortValue()).isEqualTo(8080);
+    }
+
+    @Test
+    void homeRoutesOfUserTenantsGoToTheCallersRegion() {
+        VirtualHost host = threeRegions.render(List.of(TestTenants.tenant("shop", 3, shop)), false)
+                .routes().getFirst().getVirtualHosts(0);
+
+        assertThat(host.getRoutesList()).extracting(r -> r.getRoute().getCluster())
+                .containsExactly("", "edge.us", "tenant.shop.api", "tenant.shop.api");
+        Route home = host.getRoutes(1);
+        assertThat(home.getMatch().getHeadersList()).extracting(HeaderMatcher::getName)
+                .contains(ConfigRenderer.TARGET_REGION_HEADER, ConfigRenderer.HOP_HEADER);
+        assertThat(home.getMetadata()).isEqualTo(host.getRoutes(2).getMetadata());
+        assertThat(host.getRoutes(2).getResponseHeadersToAdd(0).getHeader().getKey())
+                .isEqualTo(ConfigRenderer.SERVED_BY_HEADER);
+    }
+
+    @Test
+    void aTenantWithNoReachableRegionIsUnavailable() {
+        TenantSpec far = new TenantSpec("far", List.of("ap"), List.of("far.test"),
+                List.of(new TenantSpec.Backend("web", "web.t-far.svc", 80)),
+                List.of(new TenantSpec.Route("/", TenantSpec.Match.PREFIX, List.of(), "web",
+                        TenantSpec.Auth.NONE, List.of(), TenantSpec.RouteBy.LOCAL, null, null)),
+                null);
+
+        VirtualHost host = routes(List.of(TestTenants.tenant("far", 1, far))).getVirtualHosts(0);
+
+        assertThat(host.getRoutesList()).hasSize(2);
+        assertThat(host.getRoutes(1).getDirectResponse().getStatus()).isEqualTo(503);
+    }
+
+    @Test
+    void peerEnvoysAreTrustedForTheClientAddress() throws Exception {
+        EnvoyResources resources = threeRegions.render(List.of(), false);
+
+        assertThat(resources.listeners().getFirst().getFilterChainsList()).hasSize(2);
+        assertThat(manager(resources).getXffNumTrustedHops()).isZero();
+        var peers = resources.listeners().getFirst().getFilterChains(1);
+        assertThat(peers.getFilterChainMatch().getSourcePrefixRanges(0).getAddressPrefix()).isEqualTo("10.66.0.0");
+        assertThat(peers.getFilterChainMatch().getSourcePrefixRanges(0).getPrefixLen().getValue()).isEqualTo(24);
+        assertThat(peers.getFilters(0).getTypedConfig().unpack(HttpConnectionManager.class).getXffNumTrustedHops())
+                .isEqualTo(1);
+    }
+
     private RouteConfiguration routes(List<ActiveTenant> tenants) {
         return renderer.render(tenants, false).routes().getFirst();
     }
