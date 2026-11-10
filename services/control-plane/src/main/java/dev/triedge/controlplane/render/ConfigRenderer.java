@@ -13,6 +13,7 @@ import io.envoyproxy.envoy.config.cluster.v3.Cluster;
 import io.envoyproxy.envoy.config.core.v3.Address;
 import io.envoyproxy.envoy.config.core.v3.AggregatedConfigSource;
 import io.envoyproxy.envoy.config.core.v3.ApiVersion;
+import io.envoyproxy.envoy.config.core.v3.BindConfig;
 import io.envoyproxy.envoy.config.core.v3.CidrRange;
 import io.envoyproxy.envoy.config.core.v3.ConfigSource;
 import io.envoyproxy.envoy.config.core.v3.GrpcService;
@@ -78,6 +79,7 @@ public class ConfigRenderer {
     private static final String RATE_LIMIT_STATS = "rate_limit";
     private static final int MAX_CLIENTS_PER_ROUTE = 10_000;
     private static final Duration DEFAULT_TIMEOUT = seconds(15);
+    private static final int BUFFER_LIMIT_BYTES = 32 * 1024;
 
     private final String region;
     private final int listenerPort;
@@ -85,6 +87,7 @@ public class ConfigRenderer {
     private final int sidecarPort;
     private final Map<String, String> remoteRegions;
     private final List<String> peerCidrs;
+    private final @Nullable String tenantSourceAddress;
 
     public ConfigRenderer(String region, int listenerPort, String sidecarHost, int sidecarPort) {
         this(region, listenerPort, sidecarHost, sidecarPort, Map.of());
@@ -97,6 +100,11 @@ public class ConfigRenderer {
 
     public ConfigRenderer(String region, int listenerPort, String sidecarHost, int sidecarPort,
             Map<String, String> remoteRegions, List<String> peerCidrs) {
+        this(region, listenerPort, sidecarHost, sidecarPort, remoteRegions, peerCidrs, null);
+    }
+
+    public ConfigRenderer(String region, int listenerPort, String sidecarHost, int sidecarPort,
+            Map<String, String> remoteRegions, List<String> peerCidrs, @Nullable String tenantSourceAddress) {
         this.region = region;
         this.listenerPort = listenerPort;
         this.sidecarHost = sidecarHost;
@@ -104,6 +112,9 @@ public class ConfigRenderer {
         this.remoteRegions = new TreeMap<>(remoteRegions);
         this.remoteRegions.remove(region);
         this.peerCidrs = List.copyOf(peerCidrs);
+        this.tenantSourceAddress = tenantSourceAddress == null || tenantSourceAddress.isBlank()
+                ? null
+                : tenantSourceAddress;
     }
 
     public EnvoyResources render(Collection<ActiveTenant> tenants, boolean inlineRoutes) {
@@ -119,7 +130,8 @@ public class ConfigRenderer {
                 continue;
             }
             for (TenantSpec.Backend backend : tenant.spec().backends()) {
-                clusters.add(backendCluster(clusterName(tenant.name(), backend.name()), backend.host(), backend.port()));
+                Cluster cluster = backendCluster(clusterName(tenant.name(), backend.name()), backend.host(), backend.port());
+                clusters.add(tenant.system() ? cluster : userCluster(cluster));
                 for (String remote : remoteRegionsOf(tenant)) {
                     clusters.add(backendCluster(clusterName(tenant.name(), backend.name()) + "." + remote,
                             remoteHost(remote, backend.host()), backend.port()));
@@ -214,8 +226,10 @@ public class ConfigRenderer {
         RouteMatch.Builder match = RouteMatch.newBuilder();
         if (route.match() == TenantSpec.Match.EXACT) {
             match.setPath(route.path());
-        } else {
+        } else if (route.path().endsWith("/")) {
             match.setPrefix(route.path());
+        } else {
+            match.setPathSeparatedPrefix(route.path());
         }
         if (!route.methods().isEmpty()) {
             match.addHeaders(HeaderMatcher.newBuilder()
@@ -331,6 +345,7 @@ public class ConfigRenderer {
                 .setAddress(Address.newBuilder().setSocketAddress(SocketAddress.newBuilder()
                         .setAddress("0.0.0.0")
                         .setPortValue(listenerPort)))
+                .setPerConnectionBufferLimitBytes(UInt32Value.of(BUFFER_LIMIT_BYTES))
                 .addFilterChains(filterChain(manager(inlineRoutes, 0)));
         if (!peerCidrs.isEmpty()) {
             FilterChainMatch.Builder peers = FilterChainMatch.newBuilder();
@@ -359,6 +374,20 @@ public class ConfigRenderer {
                 .setStripAnyHostPort(true)
                 .setUseRemoteAddress(BoolValue.of(true))
                 .setXffNumTrustedHops(trustedHops)
+                .setNormalizePath(BoolValue.of(true))
+                .setMergeSlashes(true)
+                .setPathWithEscapedSlashesAction(HttpConnectionManager.PathWithEscapedSlashesAction.REJECT_REQUEST)
+                .setRequestHeadersTimeout(seconds(10))
+                .setStreamIdleTimeout(seconds(300))
+                .setCommonHttpProtocolOptions(io.envoyproxy.envoy.config.core.v3.HttpProtocolOptions.newBuilder()
+                        .setIdleTimeout(seconds(3600))
+                        .setHeadersWithUnderscoresAction(
+                                io.envoyproxy.envoy.config.core.v3.HttpProtocolOptions.HeadersWithUnderscoresAction
+                                        .REJECT_REQUEST))
+                .setHttp2ProtocolOptions(Http2ProtocolOptions.newBuilder()
+                        .setMaxConcurrentStreams(UInt32Value.of(100))
+                        .setInitialStreamWindowSize(UInt32Value.of(64 * 1024))
+                        .setInitialConnectionWindowSize(UInt32Value.of(1024 * 1024)))
                 .addHttpFilters(HttpFilter.newBuilder().setName(LOCAL_RATE_LIMIT).setTypedConfig(Any.pack(
                         LocalRateLimit.newBuilder().setStatPrefix(RATE_LIMIT_STATS).build())))
                 .addHttpFilters(HttpFilter.newBuilder().setName(EXT_AUTHZ).setTypedConfig(Any.pack(ExtAuthz.newBuilder()
@@ -396,9 +425,20 @@ public class ConfigRenderer {
                 .build();
     }
 
+    private Cluster userCluster(Cluster cluster) {
+        Cluster.Builder user = cluster.toBuilder().setDnsLookupFamily(Cluster.DnsLookupFamily.V4_ONLY);
+        if (tenantSourceAddress != null) {
+            user.setUpstreamBindConfig(BindConfig.newBuilder().setSourceAddress(SocketAddress.newBuilder()
+                    .setAddress(tenantSourceAddress)
+                    .setPortValue(0)));
+        }
+        return user.build();
+    }
+
     private static Cluster backendCluster(String name, String host, int port) {
         return Cluster.newBuilder()
                 .setName(name)
+                .setPerConnectionBufferLimitBytes(UInt32Value.of(BUFFER_LIMIT_BYTES))
                 .setType(Cluster.DiscoveryType.STRICT_DNS)
                 .setDnsLookupFamily(Cluster.DnsLookupFamily.V4_PREFERRED)
                 .setConnectTimeout(seconds(2))

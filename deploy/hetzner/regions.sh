@@ -8,6 +8,8 @@ STATE=.state
 PROJECT=tri-edge
 REGIONS="eu us ap"
 REMOTE_DIR=/opt/tri-edge
+TENANT_SOURCE=10.99.0.1
+SAMPLE_BACKEND=127.0.0.1:8180
 SSH_OPTS=(-i "$STATE/id_ed25519" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE/known_hosts"
   -o ConnectTimeout=10 -o ServerAliveInterval=15 -o LogLevel=ERROR)
 
@@ -128,7 +130,7 @@ prepare_state() {
   mkdir -p "$STATE"
   chmod 700 "$STATE"
   test -f "$STATE/id_ed25519" || ssh-keygen -q -t ed25519 -N "" -C "$PROJECT" -f "$STATE/id_ed25519"
-  for name in postgres replication identity edge_sidecar broker control_plane; do
+  for name in postgres replication patroni_api identity edge_sidecar broker control_plane; do
     new_secret "$name"
   done
   test -f "$STATE/signing.jwk" || (umask 077 && signing_jwk > "$STATE/signing.jwk")
@@ -185,6 +187,19 @@ setup_wireguard() {
   echo "WireGuard mesh is up"
 }
 
+setup_tenant_egress() {
+  local region=$1
+  remote "$region" "mkdir -p /etc/triedge && umask 077 && cat > /etc/triedge/tenant-egress.env" <<EOF
+TENANT_SOURCE=$TENANT_SOURCE
+TENANT_ALLOW=$SAMPLE_BACKEND
+SERVER_IPS=$(public_ip eu) $(public_ip us) $(public_ip ap)
+EOF
+  remote "$region" "cat > /usr/local/sbin/triedge-tenant-egress && chmod 755 /usr/local/sbin/triedge-tenant-egress" < tenant-egress.sh
+  remote "$region" "cat > /etc/systemd/system/triedge-tenant-egress.service" < tenant-egress.service
+  remote "$region" "systemctl daemon-reload && systemctl enable triedge-tenant-egress >/dev/null 2>&1 && systemctl restart triedge-tenant-egress"
+  echo "Tenant egress rules are set in $region"
+}
+
 bundle() {
   (cd "$ROOT" && ./gradlew --quiet :services:identity:bootJar :services:edge-sidecar:bootJar \
     :services:broker:bootJar :services:control-plane:bootJar :services:echo:bootJar)
@@ -219,6 +234,8 @@ write_env() {
     echo "AP_IP=$(wg_ip ap)"
     echo "POSTGRES_PASSWORD=$(secret postgres)"
     echo "REPLICATION_PASSWORD=$(secret replication)"
+    echo "PATRONI_API_PASSWORD=$(secret patroni_api)"
+    echo "TENANT_SOURCE=$TENANT_SOURCE"
     echo "IDENTITY_DB_PASSWORD=$(secret identity)"
     echo "EDGE_SIDECAR_DB_PASSWORD=$(secret edge_sidecar)"
     echo "BROKER_DB_PASSWORD=$(secret broker)"
@@ -339,6 +356,7 @@ up() {
   bundle
   each wait_for_server
   setup_wireguard
+  each setup_tenant_egress
   distribute
   each write_env
   each build_images

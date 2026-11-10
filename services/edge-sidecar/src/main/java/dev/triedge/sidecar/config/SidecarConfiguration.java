@@ -16,10 +16,10 @@ import dev.triedge.sidecar.directory.InitialLoader;
 import dev.triedge.sidecar.grpc.AuthorizationService;
 import dev.triedge.sidecar.grpc.GrpcServer;
 import dev.triedge.sidecar.hooks.HeaderAllowlist;
+import dev.triedge.sidecar.hooks.HookChannels;
 import dev.triedge.sidecar.hooks.HookClient;
 import dev.triedge.sidecar.routing.LeaderCache;
 import dev.triedge.sidecar.routing.PlatformRouting;
-import io.grpc.ManagedChannelBuilder;
 import java.time.Clock;
 import java.time.Duration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -63,7 +63,7 @@ public class SidecarConfiguration {
 
     @Bean(destroyMethod = "close")
     HookClient hookClient(SidecarProperties properties) {
-        return new HookClient(target -> ManagedChannelBuilder.forTarget(target).usePlaintext().build(),
+        return new HookClient(target -> HookChannels.create(target, properties.hookSourceAddress()),
                 properties.hookTimeout());
     }
 

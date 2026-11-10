@@ -1,0 +1,14 @@
+[Unit]
+Description=Keep tenant traffic away from internal addresses
+Wants=network-online.target
+After=network-online.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/triedge/tenant-egress.env
+ExecStart=/usr/local/sbin/triedge-tenant-egress
+
+[Install]
+WantedBy=multi-user.target

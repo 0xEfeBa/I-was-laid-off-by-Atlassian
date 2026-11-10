@@ -24,6 +24,7 @@ public record ControlPlaneProperties(
         @DefaultValue("PT0.1S") Duration coalesce,
         @DefaultValue Map<String, String> remoteRegions,
         @DefaultValue List<String> peerCidrs,
+        @Nullable String tenantSourceAddress,
         @DefaultValue("PT2S") Duration etcdTimeout,
         @DefaultValue("PT60S") Duration maxFollowAge) {
 }

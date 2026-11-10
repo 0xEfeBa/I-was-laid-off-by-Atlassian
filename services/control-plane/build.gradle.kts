@@ -20,5 +20,6 @@ val systemTenants = rootProject.file("deploy/system-tenants")
 tasks.test {
     systemProperty("triedge.system-tenants", systemTenants.absolutePath)
     systemProperty("triedge.envoy-bootstrap", rootProject.file("envoy/bootstrap.yaml").absolutePath)
+    systemProperty("triedge.tenant-egress", rootProject.file("deploy/hetzner/tenant-egress.sh").absolutePath)
     systemProperty("jdk.httpclient.allowRestrictedHeaders", "host")
 }

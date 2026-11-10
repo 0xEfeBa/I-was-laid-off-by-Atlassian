@@ -13,6 +13,7 @@ public record SidecarProperties(
         @DefaultValue("PT30S") Duration jwksMinRefresh,
         @DefaultValue("PT0.2S") Duration pollInterval,
         @DefaultValue("PT0.05S") Duration hookTimeout,
+        @Nullable String hookSourceAddress,
         @Nullable String etcdUrl,
         @DefaultValue("/triedge/db") String leaderNamespace,
         @DefaultValue("PT1S") Duration leaderCacheTtl,

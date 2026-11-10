@@ -9,6 +9,7 @@ import dev.triedge.controlplane.source.ActiveTenant;
 import dev.triedge.controlplane.validate.BootstrapJson;
 import dev.triedge.tenant.TenantSpec;
 import io.envoyproxy.envoy.config.cluster.v3.Cluster;
+import io.envoyproxy.envoy.config.core.v3.HttpProtocolOptions;
 import io.envoyproxy.envoy.config.route.v3.HeaderMatcher;
 import io.envoyproxy.envoy.config.route.v3.Route;
 import io.envoyproxy.envoy.config.route.v3.RouteConfiguration;
@@ -60,7 +61,7 @@ class ConfigRendererTest {
         Route orders = host.getRoutes(1);
         Route health = host.getRoutes(2);
 
-        assertThat(orders.getMatch().getPrefix()).isEqualTo("/orders");
+        assertThat(orders.getMatch().getPathSeparatedPrefix()).isEqualTo("/orders");
         assertThat(orders.getMatch().getHeaders(0).getName()).isEqualTo(":method");
         assertThat(orders.getMatch().getHeaders(0).getStringMatch().getSafeRegex().getRegex()).isEqualTo("GET|HEAD");
         assertThat(orders.getRoute().getCluster()).isEqualTo("tenant.shop.api");
@@ -271,6 +272,63 @@ class ConfigRendererTest {
         assertThat(peers.getFilterChainMatch().getSourcePrefixRanges(0).getPrefixLen().getValue()).isEqualTo(24);
         assertThat(peers.getFilters(0).getTypedConfig().unpack(HttpConnectionManager.class).getXffNumTrustedHops())
                 .isEqualTo(1);
+    }
+
+    @Test
+    void requestsAreNormalizedAndBounded() throws Exception {
+        EnvoyResources resources = renderer.render(List.of(), false);
+        HttpConnectionManager manager = manager(resources);
+
+        assertThat(manager.getNormalizePath().getValue()).isTrue();
+        assertThat(manager.getMergeSlashes()).isTrue();
+        assertThat(manager.getPathWithEscapedSlashesAction())
+                .isEqualTo(HttpConnectionManager.PathWithEscapedSlashesAction.REJECT_REQUEST);
+        assertThat(manager.getCommonHttpProtocolOptions().getHeadersWithUnderscoresAction())
+                .isEqualTo(HttpProtocolOptions.HeadersWithUnderscoresAction.REJECT_REQUEST);
+        assertThat(manager.getRequestHeadersTimeout().getSeconds()).isEqualTo(10);
+        assertThat(manager.getStreamIdleTimeout().getSeconds()).isEqualTo(300);
+        assertThat(manager.getHttp2ProtocolOptions().getMaxConcurrentStreams().getValue()).isEqualTo(100);
+        assertThat(resources.listeners().getFirst().getPerConnectionBufferLimitBytes().getValue()).isEqualTo(32768);
+    }
+
+    @Test
+    void prefixesOnlyMatchWholePathSegments() {
+        TenantSpec docs = new TenantSpec("docs", List.of("eu"), List.of("docs.test"),
+                List.of(new TenantSpec.Backend("web", "web.t-docs.svc", 80)),
+                List.of(
+                        new TenantSpec.Route("/api", TenantSpec.Match.PREFIX, List.of(), "web",
+                                TenantSpec.Auth.NONE, List.of(), TenantSpec.RouteBy.LOCAL, null, null),
+                        new TenantSpec.Route("/files/", TenantSpec.Match.PREFIX, List.of(), "web",
+                                TenantSpec.Auth.NONE, List.of(), TenantSpec.RouteBy.LOCAL, null, null)),
+                null);
+
+        VirtualHost host = routes(List.of(TestTenants.tenant("docs", 1, docs))).getVirtualHosts(0);
+
+        assertThat(host.getRoutes(1).getMatch().getPathSeparatedPrefix()).isEqualTo("/api");
+        assertThat(host.getRoutes(2).getMatch().getPrefix()).isEqualTo("/files/");
+    }
+
+    @Test
+    void userBackendsAreReachedFromTheTenantAddressOverIpv4Only() {
+        ConfigRenderer egress = new ConfigRenderer("eu", 8080, "edge-sidecar", 9001, Map.of(), List.of(), "10.99.0.1");
+        ActiveTenant platform = new ActiveTenant(UUID.randomUUID(), "platform", 1,
+                TestTenants.tenant("platform", "api.test", "identity", 8130).spec(), true);
+
+        List<Cluster> clusters = egress.render(List.of(TestTenants.tenant("shop", 3, shop), platform), false).clusters();
+
+        Cluster user = cluster(clusters, "tenant.shop.api");
+        assertThat(user.getUpstreamBindConfig().getSourceAddress().getAddress()).isEqualTo("10.99.0.1");
+        assertThat(user.getDnsLookupFamily()).isEqualTo(Cluster.DnsLookupFamily.V4_ONLY);
+        assertThat(cluster(clusters, "tenant.platform.main").hasUpstreamBindConfig()).isFalse();
+        assertThat(cluster(clusters, ConfigRenderer.SIDECAR_CLUSTER).hasUpstreamBindConfig()).isFalse();
+        assertThat(clusters).filteredOn(c -> c.getName().startsWith("tenant.shop."))
+                .allMatch(c -> c.getUpstreamBindConfig().getSourceAddress().getAddress().equals("10.99.0.1"));
+        assertThat(cluster(renderer.render(List.of(TestTenants.tenant("shop", 3, shop)), false).clusters(),
+                "tenant.shop.api").hasUpstreamBindConfig()).isFalse();
+    }
+
+    private static Cluster cluster(List<Cluster> clusters, String name) {
+        return clusters.stream().filter(c -> c.getName().equals(name)).findFirst().orElseThrow();
     }
 
     private RouteConfiguration routes(List<ActiveTenant> tenants) {
