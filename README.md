@@ -74,9 +74,11 @@ pnpm --filter @tri-edge/e2e test
 scripts/dev.sh load
 ```
 
+Grafana at http://localhost:3000 opens the tri-edge overview dashboard: requests, errors and latency per region, where each database primary runs, how fast changes reach the other regions, and the alerts that are firing. On Hetzner the same dashboard runs on a fourth server and opens with `deploy/hetzner/regions.sh grafana`.
+
 ## Stack
 
-Java 21 and Spring Boot for the services, Envoy at the edge with a Java xDS control plane, PostgreSQL with Patroni for automatic failover, etcd for leader election and global name reservations, WireGuard between regions, Hetzner servers on three continents, Playwright for end-to-end tests and k6 for load.
+Java 21 and Spring Boot for the services, Envoy at the edge with a Java xDS control plane, PostgreSQL with Patroni for automatic failover, etcd for leader election and global name reservations, WireGuard between regions, Hetzner servers on three continents, Playwright for end-to-end tests, k6 for load, and Prometheus, Loki, Tempo and Grafana for metrics, logs and traces.
 
 ## Credit
 

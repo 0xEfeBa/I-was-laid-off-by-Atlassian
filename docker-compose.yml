@@ -52,8 +52,29 @@ services:
       - "127.0.0.1:9090:9090"
     volumes:
       - ./dev/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.18.1
+    environment:
+      DATA_SOURCE_URI: postgres:5432/triedge?sslmode=disable
+      DATA_SOURCE_USER: monitoring
+      DATA_SOURCE_PASS: ${MONITORING_DB_PASSWORD:?run scripts/dev.sh up}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  alloy:
+    image: grafana/alloy:v1.11.3
+    command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
+    environment:
+      REGION: eu
+      LOKI_URL: http://loki:3100/loki/api/v1/push
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
 
   tempo:
     image: grafana/tempo:2.10.8
@@ -62,7 +83,7 @@ services:
       - "127.0.0.1:3200:3200"
       - "127.0.0.1:4318:4318"
     volumes:
-      - ./dev/tempo.yaml:/etc/tempo.yaml:ro
+      - ./observability/tempo.yaml:/etc/tempo.yaml:ro
       - tempo-data:/var/tempo
 
   loki:
@@ -79,7 +100,9 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - ./dev/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./observability/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./observability/grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
       - tempo
@@ -150,9 +173,10 @@ services:
       TRIEDGE_CLUSTERS_EU_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_CONTROL_PLANE_ETCD_URL: http://etcd:2379
       TRIEDGE_CONTROL_PLANE_SYSTEM_TENANTS_DIR: /etc/triedge/system-tenants
+      TRIEDGE_CONTROL_PLANE_TRACING_COLLECTOR: tempo:4318
       MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/actuator/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9100/actuator/health"]
       interval: 5s
       timeout: 2s
       retries: 3
@@ -179,9 +203,10 @@ services:
       TRIEDGE_CLUSTERS_EU_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_CONTROL_PLANE_ETCD_URL: http://etcd:2379
       TRIEDGE_CONTROL_PLANE_SYSTEM_TENANTS_DIR: /etc/triedge/system-tenants
+      TRIEDGE_CONTROL_PLANE_TRACING_COLLECTOR: tempo:4318
       MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8101/actuator/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9101/actuator/health"]
       interval: 5s
       timeout: 2s
       retries: 3
@@ -222,6 +247,8 @@ services:
       dockerfile: docker/spring-service.Dockerfile
       args:
         SERVICE: echo
+    environment:
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
 
   envoy:
     profiles: ["app"]

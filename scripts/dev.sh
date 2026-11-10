@@ -23,6 +23,7 @@ ensure_env() {
   ensure_secret EDGE_SIDECAR_DB_PASSWORD 16
   ensure_secret CONTROL_PLANE_DB_PASSWORD 16
   ensure_secret BROKER_DB_PASSWORD 16
+  ensure_secret MONITORING_DB_PASSWORD 16
 }
 
 set_role_password() {
@@ -50,6 +51,7 @@ migrate() {
   set_role_password edge_sidecar "$EDGE_SIDECAR_DB_PASSWORD"
   set_role_password control_plane "$CONTROL_PLANE_DB_PASSWORD"
   set_role_password broker "$BROKER_DB_PASSWORD"
+  set_role_password monitoring "$MONITORING_DB_PASSWORD"
 }
 
 app() {

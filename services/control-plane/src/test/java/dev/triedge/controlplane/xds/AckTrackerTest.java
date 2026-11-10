@@ -47,6 +47,7 @@ class AckTrackerTest {
         assertThat(tracker.allSynced(Map.of(CDS, 5L))).isFalse();
         assertThat(tracker.recentNacks()).singleElement()
                 .isEqualTo(new AckTracker.Nack("envoy-2", CDS, 5, "port out of range"));
+        assertThat(tracker.totalNacks()).isEqualTo(1);
     }
 
     @Test

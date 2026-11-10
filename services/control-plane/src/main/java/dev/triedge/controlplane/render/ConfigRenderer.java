@@ -19,6 +19,8 @@ import io.envoyproxy.envoy.config.core.v3.ConfigSource;
 import io.envoyproxy.envoy.config.core.v3.GrpcService;
 import io.envoyproxy.envoy.config.core.v3.HeaderValue;
 import io.envoyproxy.envoy.config.core.v3.HeaderValueOption;
+import io.envoyproxy.envoy.config.core.v3.HttpService;
+import io.envoyproxy.envoy.config.core.v3.HttpUri;
 import io.envoyproxy.envoy.config.core.v3.Http2ProtocolOptions;
 import io.envoyproxy.envoy.config.core.v3.Metadata;
 import io.envoyproxy.envoy.config.core.v3.RuntimeFractionalPercent;
@@ -39,6 +41,7 @@ import io.envoyproxy.envoy.config.route.v3.RouteAction;
 import io.envoyproxy.envoy.config.route.v3.RouteConfiguration;
 import io.envoyproxy.envoy.config.route.v3.RouteMatch;
 import io.envoyproxy.envoy.config.route.v3.VirtualHost;
+import io.envoyproxy.envoy.config.trace.v3.OpenTelemetryConfig;
 import io.envoyproxy.envoy.extensions.common.ratelimit.v3.LocalRateLimitDescriptor;
 import io.envoyproxy.envoy.extensions.common.ratelimit.v3.RateLimitDescriptor;
 import io.envoyproxy.envoy.extensions.common.ratelimit.v3.XRateLimitHeadersRFCVersion;
@@ -53,6 +56,7 @@ import io.envoyproxy.envoy.extensions.upstreams.http.v3.HttpProtocolOptions;
 import io.envoyproxy.envoy.type.matcher.v3.RegexMatcher;
 import io.envoyproxy.envoy.type.v3.FractionalPercent;
 import io.envoyproxy.envoy.type.v3.HttpStatus;
+import io.envoyproxy.envoy.type.v3.Percent;
 import io.envoyproxy.envoy.type.v3.StatusCode;
 import io.envoyproxy.envoy.type.v3.TokenBucket;
 import io.envoyproxy.envoy.type.matcher.v3.StringMatcher;
@@ -69,6 +73,7 @@ public class ConfigRenderer {
     public static final String LISTENER = "public";
     public static final String ROUTE_CONFIGURATION = "public";
     public static final String SIDECAR_CLUSTER = "platform.edge-sidecar";
+    public static final String TRACING_CLUSTER = "platform.tracing";
     public static final String AUTH_METADATA = "triedge.auth";
     public static final String TARGET_REGION_HEADER = "x-target-region";
     public static final String HOP_HEADER = "x-triedge-hop";
@@ -88,6 +93,10 @@ public class ConfigRenderer {
     private final Map<String, String> remoteRegions;
     private final List<String> peerCidrs;
     private final @Nullable String tenantSourceAddress;
+    private final @Nullable Tracing tracing;
+
+    public record Tracing(String host, int port, double samplingPercent) {
+    }
 
     public ConfigRenderer(String region, int listenerPort, String sidecarHost, int sidecarPort) {
         this(region, listenerPort, sidecarHost, sidecarPort, Map.of());
@@ -105,6 +114,12 @@ public class ConfigRenderer {
 
     public ConfigRenderer(String region, int listenerPort, String sidecarHost, int sidecarPort,
             Map<String, String> remoteRegions, List<String> peerCidrs, @Nullable String tenantSourceAddress) {
+        this(region, listenerPort, sidecarHost, sidecarPort, remoteRegions, peerCidrs, tenantSourceAddress, null);
+    }
+
+    public ConfigRenderer(String region, int listenerPort, String sidecarHost, int sidecarPort,
+            Map<String, String> remoteRegions, List<String> peerCidrs, @Nullable String tenantSourceAddress,
+            @Nullable Tracing tracing) {
         this.region = region;
         this.listenerPort = listenerPort;
         this.sidecarHost = sidecarHost;
@@ -115,6 +130,7 @@ public class ConfigRenderer {
         this.tenantSourceAddress = tenantSourceAddress == null || tenantSourceAddress.isBlank()
                 ? null
                 : tenantSourceAddress;
+        this.tracing = tracing;
     }
 
     public EnvoyResources render(Collection<ActiveTenant> tenants, boolean inlineRoutes) {
@@ -122,6 +138,9 @@ public class ConfigRenderer {
         RouteConfiguration routes = routeConfiguration(sorted);
         List<Cluster> clusters = new ArrayList<>();
         clusters.add(sidecarCluster());
+        if (tracing != null) {
+            clusters.add(backendCluster(TRACING_CLUSTER, tracing.host(), tracing.port()));
+        }
         for (String remote : remoteRegions.keySet()) {
             clusters.add(backendCluster(edgeCluster(remote), remoteHost(remote, "envoy"), listenerPort));
         }
@@ -403,6 +422,19 @@ public class ConfigRenderer {
                 .addHttpFilters(HttpFilter.newBuilder()
                         .setName("envoy.filters.http.router")
                         .setTypedConfig(Any.pack(Router.getDefaultInstance())));
+        if (tracing != null) {
+            manager.setTracing(HttpConnectionManager.Tracing.newBuilder()
+                    .setRandomSampling(Percent.newBuilder().setValue(tracing.samplingPercent()))
+                    .setProvider(io.envoyproxy.envoy.config.trace.v3.Tracing.Http.newBuilder()
+                            .setName("envoy.tracers.opentelemetry")
+                            .setTypedConfig(Any.pack(OpenTelemetryConfig.newBuilder()
+                                    .setServiceName("envoy")
+                                    .setHttpService(HttpService.newBuilder().setHttpUri(HttpUri.newBuilder()
+                                            .setUri("http://" + tracing.host() + ":" + tracing.port() + "/v1/traces")
+                                            .setCluster(TRACING_CLUSTER)
+                                            .setTimeout(seconds(1))))
+                                    .build()))));
+        }
         if (inlineRoutes != null) {
             manager.setRouteConfig(inlineRoutes);
         } else {

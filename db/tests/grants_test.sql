@@ -42,4 +42,8 @@ SELECT pg_temp.check_access('control_plane', $$DELETE FROM platform.tenants$$, f
 SELECT pg_temp.check_access('control_plane', 'SELECT state FROM platform.tenant_version_status', true);
 SELECT pg_temp.check_access('control_plane', $$UPDATE platform.tenant_version_status SET detail = NULL WHERE false$$, false);
 
+SELECT pg_temp.check_access('monitoring', 'SELECT count(*) FROM pg_stat_activity', true);
+SELECT pg_temp.check_access('monitoring', 'SELECT 1 FROM identity.users', false);
+SELECT pg_temp.check_access('monitoring', 'SELECT 1 FROM platform.tenants', false);
+
 \echo 'All grant checks passed'

@@ -8,6 +8,15 @@ x-patroni: &patroni
   network_mode: host
   restart: unless-stopped
 
+x-tracing: &tracing
+  MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://${OBS_IP}:4318/v1/traces
+  MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "0.1"
+
+x-postgres-exporter: &postgres-exporter
+  image: quay.io/prometheuscommunity/postgres-exporter:v0.18.1
+  network_mode: host
+  restart: unless-stopped
+
 x-app: &app
   network_mode: host
   restart: unless-stopped
@@ -108,7 +117,7 @@ services:
       TRIEDGE_IDENTITY_SIGNING_JWK: ${IDENTITY_SIGNING_JWK}
       TRIEDGE_IDENTITY_SECURE_COOKIES: "false"
       TRIEDGE_IDENTITY_ALLOWED_ORIGINS: http://localhost:5173
-      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+      <<: *tracing
 
   edge-sidecar:
     <<: *app
@@ -136,7 +145,7 @@ services:
       TRIEDGE_SIDECAR_JWKS_URL: http://127.0.0.1:8130/.well-known/jwks.json
       TRIEDGE_SIDECAR_ETCD_URL: http://127.0.0.1:2379
       TRIEDGE_SIDECAR_HOOK_SOURCE_ADDRESS: ${TENANT_SOURCE}
-      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+      <<: *tracing
 
   broker:
     <<: *app
@@ -159,7 +168,7 @@ services:
       TRIEDGE_CLUSTERS_AP_PASSWORD: ${BROKER_DB_PASSWORD}
       TRIEDGE_BROKER_ETCD_URL: http://127.0.0.1:2379
       TRIEDGE_BROKER_CONTROL_PLANE_URLS: http://127.0.0.1:8100,http://127.0.0.1:8101
-      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+      <<: *tracing
 
   control-plane: &control-plane
     <<: *app
@@ -189,9 +198,11 @@ services:
       TRIEDGE_CONTROL_PLANE_REMOTE_REGIONS_AP: ${AP_IP}
       TRIEDGE_CONTROL_PLANE_PEER_CIDRS: 10.66.0.0/24
       TRIEDGE_CONTROL_PLANE_TENANT_SOURCE_ADDRESS: ${TENANT_SOURCE}
-      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+      TRIEDGE_CONTROL_PLANE_TRACING_COLLECTOR: ${OBS_IP}:4318
+      TRIEDGE_CONTROL_PLANE_TRACING_SAMPLING: 10
+      <<: *tracing
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/actuator/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9100/actuator/health"]
       interval: 5s
       timeout: 2s
       retries: 3
@@ -206,7 +217,7 @@ services:
       SERVER_PORT: 8101
       TRIEDGE_CONTROL_PLANE_XDS_PORT: 18001
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8101/actuator/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9101/actuator/health"]
       interval: 5s
       timeout: 2s
       retries: 3
@@ -222,7 +233,7 @@ services:
         SERVICE: echo
     environment:
       TRIEDGE_ECHO_INSTANCE: echo-${REGION}
-      MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+      <<: *tracing
 
   envoy:
     image: envoyproxy/envoy:v1.39.4
@@ -238,7 +249,45 @@ services:
     volumes:
       - ./envoy/bootstrap.yaml:/etc/envoy/envoy.yaml:ro
 
+  alloy:
+    image: grafana/alloy:v1.11.3
+    network_mode: host
+    restart: unless-stopped
+    command: ["run", "/etc/alloy/config.alloy", "--storage.path=/var/lib/alloy/data"]
+    environment:
+      REGION: ${REGION}
+      LOKI_URL: http://${OBS_IP}:3100/loki/api/v1/push
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+
+  postgres-exporter-eu:
+    <<: *postgres-exporter
+    command: ["--web.listen-address=${SELF}:9187"]
+    environment:
+      DATA_SOURCE_URI: 127.0.0.1:5431/triedge?sslmode=disable
+      DATA_SOURCE_USER: monitoring
+      DATA_SOURCE_PASS: ${MONITORING_DB_PASSWORD}
+
+  postgres-exporter-us:
+    <<: *postgres-exporter
+    command: ["--web.listen-address=${SELF}:9188"]
+    environment:
+      DATA_SOURCE_URI: 127.0.0.1:5432/triedge?sslmode=disable
+      DATA_SOURCE_USER: monitoring
+      DATA_SOURCE_PASS: ${MONITORING_DB_PASSWORD}
+
+  postgres-exporter-ap:
+    <<: *postgres-exporter
+    command: ["--web.listen-address=${SELF}:9189"]
+    environment:
+      DATA_SOURCE_URI: 127.0.0.1:5433/triedge?sslmode=disable
+      DATA_SOURCE_USER: monitoring
+      DATA_SOURCE_PASS: ${MONITORING_DB_PASSWORD}
+
 volumes:
+  alloy-data:
   etcd-data:
   db-eu:
   db-us:

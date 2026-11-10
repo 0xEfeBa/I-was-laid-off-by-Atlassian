@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -33,6 +34,7 @@ public class AckTracker implements DiscoveryServerCallbacks {
 
     private final Map<Long, Stream> streams = new ConcurrentHashMap<>();
     private final List<Nack> nacks = new CopyOnWriteArrayList<>();
+    private final AtomicLong totalNacks = new AtomicLong();
     private final LongSupplier currentVersion;
 
     public AckTracker(LongSupplier currentVersion) {
@@ -93,6 +95,10 @@ public class AckTracker implements DiscoveryServerCallbacks {
                         .allMatch(r -> s.acked.getOrDefault(r.getKey(), -1L) >= r.getValue()));
     }
 
+    public long totalNacks() {
+        return totalNacks.get();
+    }
+
     public List<Nack> recentNacks() {
         return List.copyOf(nacks);
     }
@@ -111,6 +117,7 @@ public class AckTracker implements DiscoveryServerCallbacks {
         }
         Nack nack = new Nack(String.valueOf(stream.nodeId), sent.typeUrl(), sent.version(), error);
         log.warn("Envoy {} rejected {} version {}: {}", nack.nodeId(), nack.typeUrl(), nack.version(), error);
+        totalNacks.incrementAndGet();
         nacks.add(nack);
         while (nacks.size() > MAX_NACKS) {
             nacks.removeFirst();

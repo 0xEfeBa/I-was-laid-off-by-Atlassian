@@ -25,6 +25,8 @@ public record ControlPlaneProperties(
         @DefaultValue Map<String, String> remoteRegions,
         @DefaultValue List<String> peerCidrs,
         @Nullable String tenantSourceAddress,
+        @Nullable String tracingCollector,
+        @DefaultValue("100") double tracingSampling,
         @DefaultValue("PT2S") Duration etcdTimeout,
         @DefaultValue("PT60S") Duration maxFollowAge) {
 }

@@ -7,6 +7,7 @@ ROOT=$(cd ../.. && pwd)
 STATE=.state
 PROJECT=tri-edge
 REGIONS="eu us ap"
+NODES="$REGIONS obs"
 REMOTE_DIR=/opt/tri-edge
 TENANT_SOURCE=10.99.0.1
 SAMPLE_BACKEND=127.0.0.1:8180
@@ -14,11 +15,11 @@ SSH_OPTS=(-i "$STATE/id_ed25519" -o StrictHostKeyChecking=accept-new -o UserKnow
   -o ConnectTimeout=10 -o ServerAliveInterval=15 -o LogLevel=ERROR)
 
 location() {
-  case $1 in eu) echo nbg1 ;; us) echo ash ;; ap) echo sin ;; esac
+  case $1 in eu) echo nbg1 ;; us) echo ash ;; ap) echo sin ;; obs) echo fsn1 ;; esac
 }
 
 wg_ip() {
-  case $1 in eu) echo 10.66.0.1 ;; us) echo 10.66.0.2 ;; ap) echo 10.66.0.3 ;; esac
+  case $1 in eu) echo 10.66.0.1 ;; us) echo 10.66.0.2 ;; ap) echo 10.66.0.3 ;; obs) echo 10.66.0.4 ;; esac
 }
 
 pg_port() {
@@ -53,7 +54,7 @@ remote() {
 dc() {
   local region=$1
   shift
-  remote "$region" "cd $REMOTE_DIR && docker compose -f deploy/hetzner/region.compose.yaml --env-file region.env $*"
+  remote "$region" "cd $REMOTE_DIR && docker compose --project-directory . -f deploy/hetzner/region.compose.yaml --env-file region.env $*"
 }
 
 psql_on() {
@@ -62,8 +63,13 @@ psql_on() {
 }
 
 each() {
-  local pids=() region
-  for region in $REGIONS; do
+  each_of "$REGIONS" "$@"
+}
+
+each_of() {
+  local nodes=$1 pids=() region
+  shift
+  for region in $nodes; do
     "$@" "$region" &
     pids+=($!)
   done
@@ -90,11 +96,11 @@ for t in json.load(sys.stdin):
 if best is None:
     sys.exit("No server type with 2+ cores and 4+ GB is sold in all of " + ", ".join(sorted(wanted)))
 print(best[1])
-' "$(location eu)" "$(location us)" "$(location ap)"
+' "$@"
 }
 
 firewall_rules() {
-  python3 - "$(public_ip eu)" "$(public_ip us)" "$(public_ip ap)" <<'PY'
+  python3 - "$(public_ip eu)" "$(public_ip us)" "$(public_ip ap)" "$(public_ip obs)" <<'PY'
 import json, sys
 servers = [ip + "/32" for ip in sys.argv[1:]]
 anywhere = ["0.0.0.0/0", "::/0"]
@@ -130,25 +136,26 @@ prepare_state() {
   mkdir -p "$STATE"
   chmod 700 "$STATE"
   test -f "$STATE/id_ed25519" || ssh-keygen -q -t ed25519 -N "" -C "$PROJECT" -f "$STATE/id_ed25519"
-  for name in postgres replication patroni_api identity edge_sidecar broker control_plane; do
+  for name in postgres replication patroni_api monitoring identity edge_sidecar broker control_plane; do
     new_secret "$name"
   done
   test -f "$STATE/signing.jwk" || (umask 077 && signing_jwk > "$STATE/signing.jwk")
 }
 
 create_servers() {
-  local type
-  type=$(server_type)
-  echo "Creating three $type servers"
-  for region in $REGIONS; do
+  local type obs_type
+  type=$(server_type "$(location eu)" "$(location us)" "$(location ap)")
+  obs_type=$(server_type "$(location obs)")
+  echo "Creating three $type servers and one $obs_type server for observability"
+  for region in $NODES; do
     if ! hcloud server describe "$PROJECT-$region" >/dev/null 2>&1; then
-      hcloud server create --name "$PROJECT-$region" --type "$type" --image ubuntu-24.04 \
+      hcloud server create --name "$PROJECT-$region" --type "$([[ $region == obs ]] && echo "$obs_type" || echo "$type")" --image ubuntu-24.04 \
         --location "$(location "$region")" --ssh-key "$PROJECT" --firewall "$PROJECT" \
         --user-data-from-file cloud-init.yaml --label project="$PROJECT" --label region="$region" >/dev/null &
     fi
   done
   wait
-  for region in $REGIONS; do
+  for region in $NODES; do
     hcloud server ip "$PROJECT-$region" > "$STATE/ip-$region"
   done
 }
@@ -166,14 +173,14 @@ wait_for_server() {
 }
 
 setup_wireguard() {
-  for region in $REGIONS; do
+  for region in $NODES; do
     remote "$region" "umask 077; test -f /etc/wireguard/private.key || wg genkey > /etc/wireguard/private.key; wg pubkey < /etc/wireguard/private.key" \
       > "$STATE/wg-$region.pub"
   done
-  for region in $REGIONS; do
+  for region in $NODES; do
     {
       printf '[Interface]\nAddress = %s/24\nListenPort = 51820\nPostUp = wg set %%i private-key /etc/wireguard/private.key\n\n' "$(wg_ip "$region")"
-      for peer in $REGIONS; do
+      for peer in $NODES; do
         if [[ "$peer" != "$region" ]]; then
           printf '[Peer]\nPublicKey = %s\nEndpoint = %s:51820\nAllowedIPs = %s/32\nPersistentKeepalive = 25\n\n' \
             "$(cat "$STATE/wg-$peer.pub")" "$(public_ip "$peer")" "$(wg_ip "$peer")"
@@ -181,7 +188,7 @@ setup_wireguard() {
       done
     } | remote "$region" "umask 077; cat > /etc/wireguard/wg0.conf && systemctl enable wg-quick@wg0 >/dev/null 2>&1 && systemctl restart wg-quick@wg0"
   done
-  for peer in us ap; do
+  for peer in us ap obs; do
     remote eu "ping -c 1 -W 5 $(wg_ip "$peer") >/dev/null" || { echo "WireGuard tunnel to $peer is not up" >&2; exit 1; }
   done
   echo "WireGuard mesh is up"
@@ -192,7 +199,7 @@ setup_tenant_egress() {
   remote "$region" "mkdir -p /etc/triedge && umask 077 && cat > /etc/triedge/tenant-egress.env" <<EOF
 TENANT_SOURCE=$TENANT_SOURCE
 TENANT_ALLOW=$SAMPLE_BACKEND
-SERVER_IPS=$(public_ip eu) $(public_ip us) $(public_ip ap)
+SERVER_IPS=$(public_ip eu) $(public_ip us) $(public_ip ap) $(public_ip obs)
 EOF
   remote "$region" "cat > /usr/local/sbin/triedge-tenant-egress && chmod 755 /usr/local/sbin/triedge-tenant-egress" < tenant-egress.sh
   remote "$region" "cat > /etc/systemd/system/triedge-tenant-egress.service" < tenant-egress.service
@@ -205,6 +212,7 @@ bundle() {
     :services:broker:bootJar :services:control-plane:bootJar :services:echo:bootJar)
   tar -czf "$STATE/bundle.tgz" -C "$ROOT" docker db deploy/system-tenants envoy/bootstrap.yaml \
     deploy/hetzner/patroni.Dockerfile deploy/hetzner/patroni.yml deploy/hetzner/region.compose.yaml \
+    deploy/hetzner/obs.compose.yaml deploy/hetzner/prometheus.yml observability \
     services/identity/build/libs/app.jar services/edge-sidecar/build/libs/app.jar \
     services/broker/build/libs/app.jar services/control-plane/build/libs/app.jar services/echo/build/libs/app.jar
 }
@@ -214,12 +222,12 @@ distribute() {
   scp -q "${SSH_OPTS[@]}" "$STATE/bundle.tgz" "root@$(public_ip eu):/opt/bundle.tgz"
   remote eu "(timeout 600 python3 -m http.server 8099 --bind $(wg_ip eu) --directory /opt >/dev/null 2>&1 &)"
   sleep 2
-  for region in us ap; do
+  for region in us ap obs; do
     remote "$region" "curl -fsS -o /opt/bundle.tgz http://$(wg_ip eu):8099/bundle.tgz" &
   done
   wait
   remote eu "pkill -f 'http.server 8099' || true"
-  for region in $REGIONS; do
+  for region in $NODES; do
     remote "$region" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR && tar -xzf /opt/bundle.tgz -C $REMOTE_DIR"
   done
 }
@@ -232,9 +240,11 @@ write_env() {
     echo "EU_IP=$(wg_ip eu)"
     echo "US_IP=$(wg_ip us)"
     echo "AP_IP=$(wg_ip ap)"
+    echo "OBS_IP=$(wg_ip obs)"
     echo "POSTGRES_PASSWORD=$(secret postgres)"
     echo "REPLICATION_PASSWORD=$(secret replication)"
     echo "PATRONI_API_PASSWORD=$(secret patroni_api)"
+    echo "MONITORING_DB_PASSWORD=$(secret monitoring)"
     echo "TENANT_SOURCE=$TENANT_SOURCE"
     echo "IDENTITY_DB_PASSWORD=$(secret identity)"
     echo "EDGE_SIDECAR_DB_PASSWORD=$(secret edge_sidecar)"
@@ -322,12 +332,32 @@ ALTER ROLE identity_service PASSWORD '$(secret identity)';
 ALTER ROLE edge_sidecar PASSWORD '$(secret edge_sidecar)';
 ALTER ROLE broker PASSWORD '$(secret broker)';
 ALTER ROLE control_plane PASSWORD '$(secret control_plane)';
+ALTER ROLE monitoring PASSWORD '$(secret monitoring)';
 SQL
   echo "Cluster $cluster is migrated"
 }
 
 start_apps() {
-  dc "$1" "up -d identity edge-sidecar broker control-plane control-plane-2 echo envoy" >/dev/null 2>&1
+  dc "$1" "up -d identity edge-sidecar broker control-plane control-plane-2 echo envoy alloy \
+    postgres-exporter-eu postgres-exporter-us postgres-exporter-ap" >/dev/null 2>&1
+}
+
+start_observability() {
+  remote obs "cd $REMOTE_DIR && SELF=$(wg_ip obs) docker compose --project-directory . -f deploy/hetzner/obs.compose.yaml up -d" >/dev/null 2>&1
+  for _ in $(seq 1 60); do
+    if remote obs "curl -fs -o /dev/null http://127.0.0.1:3000/api/health"; then
+      echo "Observability is up; open it with deploy/hetzner/regions.sh grafana"
+      return
+    fi
+    sleep 3
+  done
+  echo "Observability did not come up; see deploy/hetzner/regions.sh logs obs" >&2
+  exit 1
+}
+
+grafana() {
+  echo "Grafana: http://localhost:3000 (Ctrl+C closes the tunnel)"
+  ssh "${SSH_OPTS[@]}" -N -L 3000:127.0.0.1:3000 "root@$(public_ip obs)"
 }
 
 wait_for_gateway() {
@@ -354,10 +384,11 @@ up() {
   firewall_rules > "$STATE/firewall.json"
   hcloud firewall replace-rules "$PROJECT" --rules-file "$STATE/firewall.json" >/dev/null
   bundle
-  each wait_for_server
+  each_of "$NODES" wait_for_server
   setup_wireguard
   each setup_tenant_egress
   distribute
+  start_observability
   each write_env
   each build_images
   each start_etcd
@@ -462,12 +493,16 @@ status() {
 
 logs() {
   require_token
+  if [[ "${1:-}" == obs ]]; then
+    remote obs "cd $REMOTE_DIR && SELF=$(wg_ip obs) docker compose --project-directory . -f deploy/hetzner/obs.compose.yaml logs --tail 100 ${2:-}"
+    return
+  fi
   dc "${1:-eu}" "logs --tail 100 ${2:-}"
 }
 
 down() {
   require_token
-  for region in $REGIONS; do
+  for region in $NODES; do
     hcloud server delete "$PROJECT-$region" >/dev/null 2>&1 &
   done
   wait
@@ -485,6 +520,7 @@ case "${1:-}" in
   heal) heal ;;
   status) status ;;
   logs) shift; logs "$@" ;;
+  grafana) grafana ;;
   down) down ;;
-  *) echo "Usage: deploy/hetzner/regions.sh {up|measure|test-db|test|heal|status|logs [region] [service]|down}" >&2; exit 1 ;;
+  *) echo "Usage: deploy/hetzner/regions.sh {up|measure|test-db|test|heal|status|logs [region] [service]|grafana|down}" >&2; exit 1 ;;
 esac

@@ -1,0 +1,26 @@
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "containers" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.containers.targets
+  relabel_rules = discovery.relabel.containers.rules
+  labels        = { region = sys.env("REGION") }
+  forward_to    = [loki.write.central.receiver]
+}
+
+loki.write "central" {
+  endpoint {
+    url = sys.env("LOKI_URL")
+  }
+}

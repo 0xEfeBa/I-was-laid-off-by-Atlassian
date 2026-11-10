@@ -3,9 +3,12 @@ package dev.triedge.sidecar.directory;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.triedge.common.db.ClusterDataSources;
+import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.common.outbox.OutboxWriter;
 import dev.triedge.common.testing.TestDatabase;
 import dev.triedge.sidecar.auth.PatValidator;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
@@ -26,12 +29,14 @@ class IdentityDirectoryIT {
     private final IdentityIndex index = new IdentityIndex();
     private ClusterDataSources clusters;
     private IdentityDirectory directory;
+    private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
 
     @BeforeEach
     void start() {
         clusters = new ClusterDataSources(Map.of("eu", TestDatabase.connection(2)));
         directory = new IdentityDirectory(clusters, new InitialLoader(index),
-                new IdentityEventApplier(index, JsonMapper.builder().build()), Duration.ofMillis(100));
+                new IdentityEventApplier(index, JsonMapper.builder().build()), Duration.ofMillis(100),
+                new OutboxMetrics(registry, "identity", Clock.systemUTC()));
     }
 
     @AfterEach

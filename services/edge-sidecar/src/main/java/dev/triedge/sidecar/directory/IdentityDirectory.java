@@ -3,6 +3,7 @@ package dev.triedge.sidecar.directory;
 import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.outbox.Checkpoint;
 import dev.triedge.common.outbox.OutboxEvent;
+import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.common.outbox.OutboxTailer;
 import java.time.Duration;
 import java.util.List;
@@ -25,16 +26,18 @@ public class IdentityDirectory implements SmartLifecycle {
     private final InitialLoader loader;
     private final IdentityEventApplier applier;
     private final Duration retryDelay;
+    private final OutboxMetrics metrics;
     private final Map<String, Checkpoint> positions = new ConcurrentHashMap<>();
     private final Map<String, OutboxTailer> tailers = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean();
 
     public IdentityDirectory(ClusterDataSources clusters, InitialLoader loader, IdentityEventApplier applier,
-            Duration retryDelay) {
+            Duration retryDelay, OutboxMetrics metrics) {
         this.clusters = clusters;
         this.loader = loader;
         this.applier = applier;
         this.retryDelay = retryDelay;
+        this.metrics = metrics;
     }
 
     @Override
@@ -42,6 +45,7 @@ public class IdentityDirectory implements SmartLifecycle {
         for (String cluster : clusters.clusters()) {
             positions.put(cluster, loadWithRetry(cluster));
             tailers.put(cluster, new OutboxTailer(clusters.jdbc(cluster), "identity", BATCH));
+            metrics.read(cluster);
         }
         running.set(true);
         log.info("Identity directory loaded from {}", clusters.clusters());
@@ -70,6 +74,7 @@ public class IdentityDirectory implements SmartLifecycle {
         for (String cluster : clusters.clusters()) {
             try {
                 catchUp(cluster);
+                metrics.read(cluster);
             } catch (RuntimeException e) {
                 log.warn("Could not read identity events from {}: {}", cluster, e.getMessage());
             }
@@ -83,6 +88,7 @@ public class IdentityDirectory implements SmartLifecycle {
             batch = tailers.get(cluster).poll(positions.get(cluster));
             for (OutboxEvent event : batch) {
                 applier.apply(event);
+                metrics.applied(cluster, event);
                 positions.put(cluster, Checkpoint.of(event));
                 applied++;
             }

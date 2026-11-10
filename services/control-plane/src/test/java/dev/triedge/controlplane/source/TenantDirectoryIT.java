@@ -3,9 +3,11 @@ package dev.triedge.controlplane.source;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.triedge.common.db.ClusterDataSources;
+import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.common.outbox.OutboxWriter;
 import dev.triedge.common.testing.TestDatabase;
 import dev.triedge.tenant.TenantSpecParser;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +30,7 @@ class TenantDirectoryIT {
     private final AtomicInteger changes = new AtomicInteger();
     private ClusterDataSources clusters;
     private TenantDirectory directory;
+    private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     private String suffix;
 
     @BeforeEach
@@ -36,7 +39,7 @@ class TenantDirectoryIT {
         clusters = new ClusterDataSources(Map.of("eu", TestDatabase.connection(2)));
         List<ActiveTenant> system = SystemTenants.load(System.getProperty("triedge.system-tenants"));
         directory = new TenantDirectory(clusters, system, JsonMapper.builder().build(), Duration.ofMillis(100),
-                java.time.Clock.systemUTC());
+                java.time.Clock.systemUTC(), new OutboxMetrics(registry, "platform", java.time.Clock.systemUTC()));
         directory.onChange(changes::incrementAndGet);
     }
 
@@ -76,7 +79,8 @@ class TenantDirectoryIT {
         directory.follow();
 
         assertThat(directory.get("b" + suffix)).isEmpty();
-        assertThat(directory.get("platform")).isPresent();
+        assertThat(directory.get("platform")).isPresent();        assertThat(registry.get("triedge.outbox.delay").tags("cluster", "eu").timer().count()).isPositive();
+        assertThat(registry.get("triedge.outbox.last.read").tags("cluster", "eu").timeGauge().value()).isPositive();
     }
 
     @Test

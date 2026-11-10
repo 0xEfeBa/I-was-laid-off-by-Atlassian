@@ -4,6 +4,7 @@ import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.etcd.EtcdClient;
 import dev.triedge.common.http.RestClients;
+import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.common.region.LeaderResolver;
 import dev.triedge.sidecar.auth.JwksProvider;
 import dev.triedge.sidecar.auth.JwtValidator;
@@ -20,6 +21,7 @@ import dev.triedge.sidecar.hooks.HookChannels;
 import dev.triedge.sidecar.hooks.HookClient;
 import dev.triedge.sidecar.routing.LeaderCache;
 import dev.triedge.sidecar.routing.PlatformRouting;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -45,9 +47,10 @@ public class SidecarConfiguration {
     }
 
     @Bean
-    IdentityDirectory identityDirectory(ClusterDataSources clusters, IdentityIndex index, JsonMapper json) {
+    IdentityDirectory identityDirectory(ClusterDataSources clusters, IdentityIndex index, JsonMapper json, Clock clock,
+            MeterRegistry registry) {
         return new IdentityDirectory(clusters, new InitialLoader(index), new IdentityEventApplier(index, json),
-                Duration.ofSeconds(2));
+                Duration.ofSeconds(2), new OutboxMetrics(registry, "identity", clock));
     }
 
     @Bean

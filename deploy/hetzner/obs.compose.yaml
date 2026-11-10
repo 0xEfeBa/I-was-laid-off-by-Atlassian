@@ -1,0 +1,56 @@
+name: tri-edge-obs
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.13.4
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/hetzner/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+
+  loki:
+    image: grafana/loki:3.6.17
+    restart: unless-stopped
+    ports:
+      - "${SELF}:3100:3100"
+    volumes:
+      - loki-data:/loki
+
+  tempo:
+    image: grafana/tempo:2.10.8
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "${SELF}:4318:4318"
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+
+  grafana:
+    image: grafana/grafana:12.4.12
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./observability/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./observability/grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+
+volumes:
+  prometheus-data:
+  loki-data:
+  tempo-data:

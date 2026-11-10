@@ -5,7 +5,12 @@ import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.etcd.EtcdClient;
 import dev.triedge.common.http.RestClients;
 import dev.triedge.controlplane.health.ControlPlaneHealth;
+import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.controlplane.render.ConfigRenderer;
+import io.micrometer.core.instrument.FunctionCounter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.binder.MeterBinder;
 import dev.triedge.controlplane.report.AppliedReporter;
 import dev.triedge.controlplane.source.SystemTenants;
 import dev.triedge.controlplane.source.TenantDirectory;
@@ -20,6 +25,7 @@ import io.envoyproxy.controlplane.cache.v3.SimpleCache;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -42,16 +48,17 @@ public class ControlPlaneConfiguration {
     }
 
     @Bean
-    TenantDirectory tenantDirectory(ClusterDataSources clusters, ControlPlaneProperties properties, JsonMapper json) {
+    TenantDirectory tenantDirectory(ClusterDataSources clusters, ControlPlaneProperties properties, JsonMapper json,
+            MeterRegistry registry) {
         return new TenantDirectory(clusters, SystemTenants.load(properties.systemTenantsDir()), json, Duration.ofSeconds(2),
-                Clock.systemUTC());
+                Clock.systemUTC(), new OutboxMetrics(registry, "platform", Clock.systemUTC()));
     }
 
     @Bean
     ConfigRenderer configRenderer(ClusterProperties clusters, ControlPlaneProperties properties) {
         return new ConfigRenderer(clusters.region(), properties.listenerPort(), properties.sidecarHost(),
                 properties.sidecarPort(), properties.remoteRegions(), properties.peerCidrs(),
-                properties.tenantSourceAddress());
+                properties.tenantSourceAddress(), tracing(properties));
     }
 
     @Bean
@@ -70,6 +77,39 @@ public class ControlPlaneConfiguration {
     @Bean
     AckTracker ackTracker(SnapshotPublisher publisher) {
         return new AckTracker(publisher::version);
+    }
+
+    @Bean
+    MeterBinder xdsMetrics(SnapshotPublisher publisher, AckTracker tracker) {
+        return registry -> {
+            Gauge.builder("triedge.xds.version", publisher, SnapshotPublisher::version)
+                    .description("Latest configuration version published to the proxies")
+                    .register(registry);
+            Gauge.builder("triedge.xds.connected", tracker, AckTracker::connectedNodes)
+                    .description("Proxies connected to this control plane")
+                    .register(registry);
+            Gauge.builder("triedge.xds.synced", tracker, t -> synced(publisher, t) ? 1 : 0)
+                    .description("1 when every connected proxy has accepted the latest configuration")
+                    .register(registry);
+            FunctionCounter.builder("triedge.xds.nacks", tracker, AckTracker::totalNacks)
+                    .description("Configurations rejected by a proxy")
+                    .register(registry);
+        };
+    }
+
+    private static ConfigRenderer.@Nullable Tracing tracing(ControlPlaneProperties properties) {
+        String collector = properties.tracingCollector();
+        if (collector == null || collector.isBlank()) {
+            return null;
+        }
+        int colon = collector.lastIndexOf(':');
+        return new ConfigRenderer.Tracing(collector.substring(0, colon), Integer.parseInt(collector.substring(colon + 1)),
+                properties.tracingSampling());
+    }
+
+    private static boolean synced(SnapshotPublisher publisher, AckTracker tracker) {
+        SnapshotPublisher.Published latest = publisher.latest();
+        return latest != null && tracker.allSynced(latest.requiredAcks());
     }
 
     @Bean

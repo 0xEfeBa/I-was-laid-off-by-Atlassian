@@ -14,6 +14,7 @@ import io.envoyproxy.envoy.config.route.v3.HeaderMatcher;
 import io.envoyproxy.envoy.config.route.v3.Route;
 import io.envoyproxy.envoy.config.route.v3.RouteConfiguration;
 import io.envoyproxy.envoy.config.route.v3.VirtualHost;
+import io.envoyproxy.envoy.config.trace.v3.OpenTelemetryConfig;
 import io.envoyproxy.envoy.extensions.common.ratelimit.v3.LocalRateLimitDescriptor;
 import io.envoyproxy.envoy.extensions.filters.http.ext_authz.v3.ExtAuthz;
 import io.envoyproxy.envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit;
@@ -325,6 +326,22 @@ class ConfigRendererTest {
                 .allMatch(c -> c.getUpstreamBindConfig().getSourceAddress().getAddress().equals("10.99.0.1"));
         assertThat(cluster(renderer.render(List.of(TestTenants.tenant("shop", 3, shop)), false).clusters(),
                 "tenant.shop.api").hasUpstreamBindConfig()).isFalse();
+    }
+
+    @Test
+    void envoyStartsTracesWhenACollectorIsSet() throws Exception {
+        ConfigRenderer traced = new ConfigRenderer("eu", 8080, "edge-sidecar", 9001, Map.of(), List.of(), null,
+                new ConfigRenderer.Tracing("tempo", 4318, 10));
+
+        EnvoyResources resources = traced.render(List.of(), false);
+
+        HttpConnectionManager.Tracing tracing = manager(resources).getTracing();
+        assertThat(tracing.getRandomSampling().getValue()).isEqualTo(10);
+        assertThat(tracing.getProvider().getTypedConfig().unpack(OpenTelemetryConfig.class).getHttpService()
+                .getHttpUri().getCluster()).isEqualTo(ConfigRenderer.TRACING_CLUSTER);
+        assertThat(cluster(resources.clusters(), ConfigRenderer.TRACING_CLUSTER).getLoadAssignment().getEndpoints(0)
+                .getLbEndpoints(0).getEndpoint().getAddress().getSocketAddress().getPortValue()).isEqualTo(4318);
+        assertThat(manager(renderer.render(List.of(), false)).hasTracing()).isFalse();
     }
 
     private static Cluster cluster(List<Cluster> clusters, String name) {

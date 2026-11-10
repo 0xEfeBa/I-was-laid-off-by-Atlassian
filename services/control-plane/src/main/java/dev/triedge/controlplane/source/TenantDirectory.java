@@ -3,6 +3,7 @@ package dev.triedge.controlplane.source;
 import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.outbox.Checkpoint;
 import dev.triedge.common.outbox.OutboxEvent;
+import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.common.outbox.OutboxTailer;
 import dev.triedge.tenant.TenantSpecParser;
 import java.sql.ResultSet;
@@ -49,6 +50,7 @@ public class TenantDirectory implements SmartLifecycle {
     private final JsonMapper json;
     private final Duration retryDelay;
     private final Clock clock;
+    private final OutboxMetrics metrics;
     private final Map<String, ActiveTenant> tenants = new ConcurrentHashMap<>();
     private final Map<String, Checkpoint> positions = new ConcurrentHashMap<>();
     private final Map<String, OutboxTailer> tailers = new ConcurrentHashMap<>();
@@ -58,12 +60,13 @@ public class TenantDirectory implements SmartLifecycle {
     private volatile @Nullable Instant lastFollow;
 
     public TenantDirectory(ClusterDataSources clusters, List<ActiveTenant> systemTenants, JsonMapper json,
-            Duration retryDelay, Clock clock) {
+            Duration retryDelay, Clock clock, OutboxMetrics metrics) {
         this.clusters = clusters;
         this.systemTenants = systemTenants;
         this.json = json;
         this.retryDelay = retryDelay;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     public @Nullable Instant lastFollow() {
@@ -100,6 +103,7 @@ public class TenantDirectory implements SmartLifecycle {
             positions.put(cluster, loadWithRetry(cluster));
             tailers.put(cluster, new OutboxTailer(clusters.jdbc(cluster), "platform", BATCH));
             caughtUp.put(cluster, clock.instant());
+            metrics.read(cluster);
         }
         lastFollow = clock.instant();
         running.set(true);
@@ -132,6 +136,7 @@ public class TenantDirectory implements SmartLifecycle {
             try {
                 changed |= catchUp(cluster);
                 caughtUp.put(cluster, clock.instant());
+                metrics.read(cluster);
             } catch (RuntimeException e) {
                 log.warn("Could not read tenant events from {}: {}", cluster, e.getMessage());
             }
@@ -149,6 +154,7 @@ public class TenantDirectory implements SmartLifecycle {
             batch = tailers.get(cluster).poll(positions.get(cluster));
             for (OutboxEvent event : batch) {
                 changed |= apply(cluster, event);
+                metrics.applied(cluster, event);
                 positions.put(cluster, Checkpoint.of(event));
             }
         } while (batch.size() == BATCH);
