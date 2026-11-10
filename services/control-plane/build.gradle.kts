@@ -9,6 +9,7 @@ dependencies {
     implementation(libs.envoy.control.plane.cache)
     implementation("com.google.protobuf:protobuf-java-util")
     implementation("io.grpc:grpc-netty-shaded")
+    implementation("io.grpc:grpc-services")
 
     testImplementation(testFixtures(project(":libs:common")))
     testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
@@ -18,5 +19,6 @@ val systemTenants = rootProject.file("deploy/system-tenants")
 
 tasks.test {
     systemProperty("triedge.system-tenants", systemTenants.absolutePath)
+    systemProperty("triedge.envoy-bootstrap", rootProject.file("envoy/bootstrap.yaml").absolutePath)
     systemProperty("jdk.httpclient.allowRestrictedHeaders", "host")
 }

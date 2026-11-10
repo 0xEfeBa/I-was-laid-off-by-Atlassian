@@ -23,5 +23,6 @@ public record ControlPlaneProperties(
         }) List<String> forbiddenBackendHosts,
         @DefaultValue("PT0.1S") Duration coalesce,
         @DefaultValue Map<String, String> remoteRegions,
-        @DefaultValue("PT2S") Duration etcdTimeout) {
+        @DefaultValue("PT2S") Duration etcdTimeout,
+        @DefaultValue("PT60S") Duration maxFollowAge) {
 }

@@ -35,7 +35,8 @@ class TenantDirectoryIT {
         suffix = UUID.randomUUID().toString().substring(0, 6);
         clusters = new ClusterDataSources(Map.of("eu", TestDatabase.connection(2)));
         List<ActiveTenant> system = SystemTenants.load(System.getProperty("triedge.system-tenants"));
-        directory = new TenantDirectory(clusters, system, JsonMapper.builder().build(), Duration.ofMillis(100));
+        directory = new TenantDirectory(clusters, system, JsonMapper.builder().build(), Duration.ofMillis(100),
+                java.time.Clock.systemUTC());
         directory.onChange(changes::incrementAndGet);
     }
 

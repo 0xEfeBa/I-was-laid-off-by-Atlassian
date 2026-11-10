@@ -70,7 +70,7 @@ class BrokerApiIT {
         registry.add("triedge.clusters.eu.username", connection::username);
         registry.add("triedge.clusters.eu.password", connection::password);
         registry.add("triedge.broker.etcd-url", TestEtcd::url);
-        registry.add("triedge.broker.control-plane-url", () -> "http://control-plane.invalid");
+        registry.add("triedge.broker.control-plane-urls", () -> "http://control-plane.invalid");
         registry.add("triedge.broker.max-tenants-per-user", () -> "2");
         registry.add("triedge.broker.worker-interval", () -> "PT1H");
         registry.add("triedge.broker.janitor-interval", () -> "PT1H");

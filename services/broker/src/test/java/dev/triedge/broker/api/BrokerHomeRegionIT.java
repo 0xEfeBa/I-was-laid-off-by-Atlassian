@@ -69,7 +69,7 @@ class BrokerHomeRegionIT {
         registry.add("triedge.clusters.us.username", US::username);
         registry.add("triedge.clusters.us.password", US::password);
         registry.add("triedge.broker.etcd-url", TestEtcd::url);
-        registry.add("triedge.broker.control-plane-url", () -> "http://control-plane.invalid");
+        registry.add("triedge.broker.control-plane-urls", () -> "http://control-plane.invalid");
         registry.add("triedge.broker.leader-namespace", () -> "/test-db");
         registry.add("triedge.broker.worker-interval", () -> "PT1H");
         registry.add("triedge.broker.janitor-interval", () -> "PT1H");

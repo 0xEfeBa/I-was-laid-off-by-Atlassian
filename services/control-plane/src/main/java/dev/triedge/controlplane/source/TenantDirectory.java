@@ -7,7 +7,9 @@ import dev.triedge.common.outbox.OutboxTailer;
 import dev.triedge.tenant.TenantSpecParser;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -46,18 +48,30 @@ public class TenantDirectory implements SmartLifecycle {
     private final List<ActiveTenant> systemTenants;
     private final JsonMapper json;
     private final Duration retryDelay;
+    private final Clock clock;
     private final Map<String, ActiveTenant> tenants = new ConcurrentHashMap<>();
     private final Map<String, Checkpoint> positions = new ConcurrentHashMap<>();
     private final Map<String, OutboxTailer> tailers = new ConcurrentHashMap<>();
     private final List<Runnable> listeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean running = new AtomicBoolean();
+    private final Map<String, Instant> caughtUp = new ConcurrentHashMap<>();
+    private volatile @Nullable Instant lastFollow;
 
     public TenantDirectory(ClusterDataSources clusters, List<ActiveTenant> systemTenants, JsonMapper json,
-            Duration retryDelay) {
+            Duration retryDelay, Clock clock) {
         this.clusters = clusters;
         this.systemTenants = systemTenants;
         this.json = json;
         this.retryDelay = retryDelay;
+        this.clock = clock;
+    }
+
+    public @Nullable Instant lastFollow() {
+        return lastFollow;
+    }
+
+    public Map<String, Instant> caughtUp() {
+        return Map.copyOf(caughtUp);
     }
 
     public void onChange(Runnable listener) {
@@ -85,7 +99,9 @@ public class TenantDirectory implements SmartLifecycle {
         for (String cluster : clusters.clusters()) {
             positions.put(cluster, loadWithRetry(cluster));
             tailers.put(cluster, new OutboxTailer(clusters.jdbc(cluster), "platform", BATCH));
+            caughtUp.put(cluster, clock.instant());
         }
+        lastFollow = clock.instant();
         running.set(true);
         log.info("Loaded {} tenants ({} system)", tenants.size(), systemTenants.size());
         notifyListeners();
@@ -115,10 +131,12 @@ public class TenantDirectory implements SmartLifecycle {
         for (String cluster : clusters.clusters()) {
             try {
                 changed |= catchUp(cluster);
+                caughtUp.put(cluster, clock.instant());
             } catch (RuntimeException e) {
                 log.warn("Could not read tenant events from {}: {}", cluster, e.getMessage());
             }
         }
+        lastFollow = clock.instant();
         if (changed) {
             notifyListeners();
         }

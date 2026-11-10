@@ -310,7 +310,7 @@ SQL
 }
 
 start_apps() {
-  dc "$1" "up -d identity edge-sidecar broker control-plane echo envoy" >/dev/null 2>&1
+  dc "$1" "up -d identity edge-sidecar broker control-plane control-plane-2 echo envoy" >/dev/null 2>&1
 }
 
 wait_for_gateway() {

@@ -78,8 +78,9 @@ public class BrokerConfiguration {
 
     @Bean
     ControlPlaneClient controlPlaneClient(BrokerProperties properties, RestClient.Builder http) {
-        return new ControlPlaneClient(
-                RestClients.create(http, properties.controlPlaneUrl(), properties.controlPlaneTimeout()));
+        return new ControlPlaneClient(properties.controlPlaneUrls().stream()
+                .map(url -> RestClients.create(http, url, properties.controlPlaneTimeout()))
+                .toList());
     }
 
     @Bean

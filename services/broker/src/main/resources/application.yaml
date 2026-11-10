@@ -14,4 +14,4 @@ triedge:
       password: ${BROKER_DB_PASSWORD:}
   broker:
     etcd-url: http://localhost:2379
-    control-plane-url: http://localhost:8100
+    control-plane-urls: http://localhost:8100

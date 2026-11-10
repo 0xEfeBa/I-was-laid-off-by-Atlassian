@@ -151,16 +151,16 @@ services:
       TRIEDGE_CLUSTERS_AP_USERNAME: broker
       TRIEDGE_CLUSTERS_AP_PASSWORD: ${BROKER_DB_PASSWORD}
       TRIEDGE_BROKER_ETCD_URL: http://127.0.0.1:2379
-      TRIEDGE_BROKER_CONTROL_PLANE_URL: http://127.0.0.1:8100
+      TRIEDGE_BROKER_CONTROL_PLANE_URLS: http://127.0.0.1:8100,http://127.0.0.1:8101
       MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
 
-  control-plane:
+  control-plane: &control-plane
     <<: *app
     image: tri-edge-control-plane
     build:
       context: .
       dockerfile: docker/control-plane.Dockerfile
-    environment:
+    environment: &control-plane-env
       TRIEDGE_REGION: ${REGION}
       TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://${SELF}:5431,${EU_IP}:5431,${US_IP}:5431,${AP_IP}:5431/triedge?targetServerType=any
       TRIEDGE_CLUSTERS_EU_USERNAME: control_plane
@@ -181,8 +181,27 @@ services:
       TRIEDGE_CONTROL_PLANE_REMOTE_REGIONS_US: ${US_IP}
       TRIEDGE_CONTROL_PLANE_REMOTE_REGIONS_AP: ${AP_IP}
       MANAGEMENT_TRACING_EXPORT_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/actuator/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 60s
     volumes:
       - ./deploy/system-tenants:/etc/triedge/system-tenants:ro
+
+  control-plane-2:
+    <<: *control-plane
+    environment:
+      <<: *control-plane-env
+      SERVER_PORT: 8101
+      TRIEDGE_CONTROL_PLANE_XDS_PORT: 18001
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8101/actuator/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 60s
 
   echo:
     <<: *app
@@ -203,6 +222,7 @@ services:
     command: ["-c", "/etc/envoy/envoy.yaml", "--service-node", "envoy-${REGION}", "--log-level", "warn"]
     extra_hosts:
       - "control-plane:127.0.0.1"
+      - "control-plane-2:127.0.0.1"
       - "identity:127.0.0.1"
       - "broker:127.0.0.1"
       - "echo:127.0.0.1"

@@ -8,7 +8,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 @ConfigurationProperties("triedge.broker")
 public record BrokerProperties(
         String etcdUrl,
-        String controlPlaneUrl,
+        List<String> controlPlaneUrls,
         @DefaultValue("5") int maxTenantsPerUser,
         @DefaultValue("platform") List<String> reservedNames,
         @DefaultValue("PT30S") Duration jobLock,

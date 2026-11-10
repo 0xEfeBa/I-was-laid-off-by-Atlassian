@@ -151,6 +151,41 @@ services:
       TRIEDGE_CONTROL_PLANE_ETCD_URL: http://etcd:2379
       TRIEDGE_CONTROL_PLANE_SYSTEM_TENANTS_DIR: /etc/triedge/system-tenants
       MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8100/actuator/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 60s
+    volumes:
+      - ./deploy/system-tenants:/etc/triedge/system-tenants:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      etcd:
+        condition: service_healthy
+
+  control-plane-2:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: docker/control-plane.Dockerfile
+    environment:
+      TRIEDGE_REGION: eu
+      SERVER_PORT: 8101
+      TRIEDGE_CONTROL_PLANE_XDS_PORT: 18001
+      TRIEDGE_CLUSTERS_EU_URL: jdbc:postgresql://postgres:5432/triedge
+      TRIEDGE_CLUSTERS_EU_USERNAME: control_plane
+      TRIEDGE_CLUSTERS_EU_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD:?run scripts/dev.sh up}
+      TRIEDGE_CONTROL_PLANE_ETCD_URL: http://etcd:2379
+      TRIEDGE_CONTROL_PLANE_SYSTEM_TENANTS_DIR: /etc/triedge/system-tenants
+      MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8101/actuator/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 60s
     volumes:
       - ./deploy/system-tenants:/etc/triedge/system-tenants:ro
     depends_on:
@@ -172,7 +207,7 @@ services:
       TRIEDGE_CLUSTERS_EU_USERNAME: broker
       TRIEDGE_CLUSTERS_EU_PASSWORD: ${BROKER_DB_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_BROKER_ETCD_URL: http://etcd:2379
-      TRIEDGE_BROKER_CONTROL_PLANE_URL: http://control-plane:8100
+      TRIEDGE_BROKER_CONTROL_PLANE_URLS: http://control-plane:8100,http://control-plane-2:8101
       MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
     depends_on:
       postgres:
@@ -198,6 +233,7 @@ services:
       - ./envoy/bootstrap.yaml:/etc/envoy/envoy.yaml:ro
     depends_on:
       - control-plane
+      - control-plane-2
       - identity
       - edge-sidecar
       - broker

@@ -4,6 +4,7 @@ import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.etcd.EtcdClient;
 import dev.triedge.common.http.RestClients;
+import dev.triedge.controlplane.health.ControlPlaneHealth;
 import dev.triedge.controlplane.render.ConfigRenderer;
 import dev.triedge.controlplane.report.AppliedReporter;
 import dev.triedge.controlplane.source.SystemTenants;
@@ -16,6 +17,7 @@ import dev.triedge.controlplane.xds.AckTracker;
 import dev.triedge.controlplane.xds.SnapshotPublisher;
 import dev.triedge.controlplane.xds.XdsServer;
 import io.envoyproxy.controlplane.cache.v3.SimpleCache;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import org.slf4j.Logger;
@@ -41,7 +43,8 @@ public class ControlPlaneConfiguration {
 
     @Bean
     TenantDirectory tenantDirectory(ClusterDataSources clusters, ControlPlaneProperties properties, JsonMapper json) {
-        return new TenantDirectory(clusters, SystemTenants.load(properties.systemTenantsDir()), json, Duration.ofSeconds(2));
+        return new TenantDirectory(clusters, SystemTenants.load(properties.systemTenantsDir()), json, Duration.ofSeconds(2),
+                Clock.systemUTC());
     }
 
     @Bean
@@ -72,6 +75,11 @@ public class ControlPlaneConfiguration {
     XdsServer xdsServer(ControlPlaneProperties properties, SimpleCache<String> cache, AckTracker tracker,
             SnapshotPublisher publisher) {
         return new XdsServer(properties.xdsPort(), cache, tracker, publisher);
+    }
+
+    @Bean
+    ControlPlaneHealth controlPlaneHealth(TenantDirectory directory, XdsServer xds, ControlPlaneProperties properties) {
+        return new ControlPlaneHealth(directory, xds, Clock.systemUTC(), properties.maxFollowAge());
     }
 
     @Bean
