@@ -3,6 +3,7 @@ package dev.triedge.sidecar.config;
 import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.etcd.EtcdClient;
+import dev.triedge.common.etcd.EtcdCredentials;
 import dev.triedge.common.http.RestClients;
 import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.common.region.LeaderResolver;
@@ -77,7 +78,8 @@ public class SidecarConfiguration {
             return new PlatformRouting(clusters.region());
         }
         LeaderResolver leaders = new LeaderResolver(
-                new EtcdClient(RestClients.create(http, properties.etcdUrl(), properties.etcdTimeout())),
+                new EtcdClient(RestClients.create(http, properties.etcdUrl(), properties.etcdTimeout()),
+                        EtcdCredentials.of(properties.etcdUsername(), properties.etcdPassword())),
                 properties.leaderNamespace());
         return new PlatformRouting(clusters.region(),
                 new LeaderCache(leaders::leaderRegion, properties.leaderCacheTtl(), clock));
@@ -90,6 +92,6 @@ public class SidecarConfiguration {
 
     @Bean
     GrpcServer grpcServer(SidecarProperties properties, AuthorizationService service) {
-        return new GrpcServer(properties.grpcPort(), service, properties.grpcThreads());
+        return new GrpcServer(properties.grpcAddress(), properties.grpcPort(), service, properties.grpcThreads());
     }
 }

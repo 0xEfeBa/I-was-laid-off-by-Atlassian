@@ -22,3 +22,7 @@ dependencies {
     testFixturesApi("com.zaxxer:HikariCP")
     testFixturesApi("org.springframework:spring-web")
 }
+
+tasks.test {
+    systemProperty("triedge.etcd-auth", rootProject.file("deploy/etcd-auth.sh").absolutePath)
+}

@@ -8,9 +8,12 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import org.jspecify.annotations.Nullable;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 public class EtcdClient {
@@ -18,9 +21,16 @@ public class EtcdClient {
     static final int MAX_TXN_OPERATIONS = 100;
 
     private final RestClient rest;
+    private final @Nullable EtcdCredentials credentials;
+    private volatile @Nullable String token;
 
     public EtcdClient(RestClient rest) {
+        this(rest, null);
+    }
+
+    public EtcdClient(RestClient rest, @Nullable EtcdCredentials credentials) {
         this.rest = rest;
+        this.credentials = credentials;
     }
 
     public Optional<String> get(String key) {
@@ -106,12 +116,38 @@ public class EtcdClient {
     }
 
     private <T> @Nullable T call(String path, Object body, Class<T> responseType) {
-        return rest.post()
-                .uri(path)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(body)
-                .retrieve()
-                .body(responseType);
+        if (credentials == null) {
+            return send(path, body, responseType, null);
+        }
+        String current = token;
+        try {
+            return send(path, body, responseType, current != null ? current : authenticate(null));
+        } catch (HttpClientErrorException.Unauthorized e) {
+            return send(path, body, responseType, authenticate(current));
+        }
+    }
+
+    private <T> @Nullable T send(String path, Object body, Class<T> responseType, @Nullable String authToken) {
+        RestClient.RequestBodySpec request = rest.post().uri(path).contentType(MediaType.APPLICATION_JSON);
+        if (authToken != null) {
+            request.header(HttpHeaders.AUTHORIZATION, authToken);
+        }
+        return request.body(body).retrieve().body(responseType);
+    }
+
+    private synchronized String authenticate(@Nullable String rejected) {
+        String current = token;
+        if (current != null && !current.equals(rejected)) {
+            return current;
+        }
+        EtcdCredentials login = Objects.requireNonNull(credentials);
+        AuthResponse response = send("/v3/auth/authenticate",
+                Map.of("name", login.username(), "password", login.password()), AuthResponse.class, null);
+        if (response == null || response.token() == null) {
+            throw new IllegalStateException("etcd did not return a token for " + login.username());
+        }
+        token = response.token();
+        return response.token();
     }
 
     private static String prefixEnd(String prefix) {
@@ -138,5 +174,9 @@ public class EtcdClient {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record TxnResponse(@Nullable Boolean succeeded) {
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record AuthResponse(@Nullable String token) {
     }
 }

@@ -22,6 +22,10 @@ x-app: &app
   restart: unless-stopped
   mem_limit: 512m
 
+x-listen: &listen
+  SERVER_ADDRESS: 127.0.0.1
+  MANAGEMENT_SERVER_ADDRESS: ${SELF}
+
 services:
   etcd:
     image: quay.io/coreos/etcd:v3.6.15
@@ -40,6 +44,8 @@ services:
       - --initial-cluster-token=tri-edge
       - --heartbeat-interval=250
       - --election-timeout=2500
+    environment:
+      ETCDCTL_USER: edge-sidecar:${ETCD_EDGE_SIDECAR_PASSWORD}
     volumes:
       - etcd-data:/etcd-data
 
@@ -49,14 +55,16 @@ services:
       PATRONI_SCOPE: eu
       PATRONI_NAME: ${REGION}-eu
       PATRONI_ETCD3_HOSTS: ${EU_IP}:2379,${US_IP}:2379,${AP_IP}:2379
-      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8008
+      PATRONI_RESTAPI_LISTEN: ${SELF}:8008
       PATRONI_RESTAPI_CONNECT_ADDRESS: ${SELF}:8008
-      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5431
+      PATRONI_POSTGRESQL_LISTEN: ${SELF},127.0.0.1:5431
       PATRONI_POSTGRESQL_CONNECT_ADDRESS: ${SELF}:5431
       PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       PATRONI_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
       PATRONI_RESTAPI_USERNAME: patroni
       PATRONI_RESTAPI_PASSWORD: ${PATRONI_API_PASSWORD}
+      PATRONI_ETCD3_USERNAME: patroni
+      PATRONI_ETCD3_PASSWORD: ${ETCD_PATRONI_PASSWORD}
     volumes:
       - db-eu:/var/lib/postgresql/data
 
@@ -66,14 +74,16 @@ services:
       PATRONI_SCOPE: us
       PATRONI_NAME: ${REGION}-us
       PATRONI_ETCD3_HOSTS: ${EU_IP}:2379,${US_IP}:2379,${AP_IP}:2379
-      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8009
+      PATRONI_RESTAPI_LISTEN: ${SELF}:8009
       PATRONI_RESTAPI_CONNECT_ADDRESS: ${SELF}:8009
-      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5432
+      PATRONI_POSTGRESQL_LISTEN: ${SELF},127.0.0.1:5432
       PATRONI_POSTGRESQL_CONNECT_ADDRESS: ${SELF}:5432
       PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       PATRONI_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
       PATRONI_RESTAPI_USERNAME: patroni
       PATRONI_RESTAPI_PASSWORD: ${PATRONI_API_PASSWORD}
+      PATRONI_ETCD3_USERNAME: patroni
+      PATRONI_ETCD3_PASSWORD: ${ETCD_PATRONI_PASSWORD}
     volumes:
       - db-us:/var/lib/postgresql/data
 
@@ -83,14 +93,16 @@ services:
       PATRONI_SCOPE: ap
       PATRONI_NAME: ${REGION}-ap
       PATRONI_ETCD3_HOSTS: ${EU_IP}:2379,${US_IP}:2379,${AP_IP}:2379
-      PATRONI_RESTAPI_LISTEN: 0.0.0.0:8010
+      PATRONI_RESTAPI_LISTEN: ${SELF}:8010
       PATRONI_RESTAPI_CONNECT_ADDRESS: ${SELF}:8010
-      PATRONI_POSTGRESQL_LISTEN: 0.0.0.0:5433
+      PATRONI_POSTGRESQL_LISTEN: ${SELF},127.0.0.1:5433
       PATRONI_POSTGRESQL_CONNECT_ADDRESS: ${SELF}:5433
       PATRONI_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
       PATRONI_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
       PATRONI_RESTAPI_USERNAME: patroni
       PATRONI_RESTAPI_PASSWORD: ${PATRONI_API_PASSWORD}
+      PATRONI_ETCD3_USERNAME: patroni
+      PATRONI_ETCD3_PASSWORD: ${ETCD_PATRONI_PASSWORD}
     volumes:
       - db-ap:/var/lib/postgresql/data
 
@@ -114,10 +126,12 @@ services:
       TRIEDGE_CLUSTERS_AP_USERNAME: identity_service
       TRIEDGE_CLUSTERS_AP_PASSWORD: ${IDENTITY_DB_PASSWORD}
       TRIEDGE_IDENTITY_ETCD_URL: http://127.0.0.1:2379
+      TRIEDGE_IDENTITY_ETCD_USERNAME: identity
+      TRIEDGE_IDENTITY_ETCD_PASSWORD: ${ETCD_IDENTITY_PASSWORD}
       TRIEDGE_IDENTITY_SIGNING_JWK: ${IDENTITY_SIGNING_JWK}
       TRIEDGE_IDENTITY_SECURE_COOKIES: "false"
       TRIEDGE_IDENTITY_ALLOWED_ORIGINS: http://localhost:5173
-      <<: *tracing
+      <<: [*tracing, *listen]
 
   edge-sidecar:
     <<: *app
@@ -144,8 +158,11 @@ services:
       TRIEDGE_SIDECAR_ISSUER: tri-edge
       TRIEDGE_SIDECAR_JWKS_URL: http://127.0.0.1:8130/.well-known/jwks.json
       TRIEDGE_SIDECAR_ETCD_URL: http://127.0.0.1:2379
+      TRIEDGE_SIDECAR_ETCD_USERNAME: edge-sidecar
+      TRIEDGE_SIDECAR_ETCD_PASSWORD: ${ETCD_EDGE_SIDECAR_PASSWORD}
       TRIEDGE_SIDECAR_HOOK_SOURCE_ADDRESS: ${TENANT_SOURCE}
-      <<: *tracing
+      TRIEDGE_SIDECAR_GRPC_ADDRESS: 127.0.0.1
+      <<: [*tracing, *listen]
 
   broker:
     <<: *app
@@ -167,8 +184,10 @@ services:
       TRIEDGE_CLUSTERS_AP_USERNAME: broker
       TRIEDGE_CLUSTERS_AP_PASSWORD: ${BROKER_DB_PASSWORD}
       TRIEDGE_BROKER_ETCD_URL: http://127.0.0.1:2379
+      TRIEDGE_BROKER_ETCD_USERNAME: broker
+      TRIEDGE_BROKER_ETCD_PASSWORD: ${ETCD_BROKER_PASSWORD}
       TRIEDGE_BROKER_CONTROL_PLANE_URLS: http://127.0.0.1:8100,http://127.0.0.1:8101
-      <<: *tracing
+      <<: [*tracing, *listen]
 
   control-plane: &control-plane
     <<: *app
@@ -191,6 +210,8 @@ services:
       TRIEDGE_CLUSTERS_US_MAX_POOL_SIZE: 3
       TRIEDGE_CLUSTERS_AP_MAX_POOL_SIZE: 3
       TRIEDGE_CONTROL_PLANE_ETCD_URL: http://127.0.0.1:2379
+      TRIEDGE_CONTROL_PLANE_ETCD_USERNAME: control-plane
+      TRIEDGE_CONTROL_PLANE_ETCD_PASSWORD: ${ETCD_CONTROL_PLANE_PASSWORD}
       TRIEDGE_CONTROL_PLANE_SIDECAR_HOST: 127.0.0.1
       TRIEDGE_CONTROL_PLANE_SYSTEM_TENANTS_DIR: /etc/triedge/system-tenants
       TRIEDGE_CONTROL_PLANE_REMOTE_REGIONS_EU: ${EU_IP}
@@ -198,11 +219,12 @@ services:
       TRIEDGE_CONTROL_PLANE_REMOTE_REGIONS_AP: ${AP_IP}
       TRIEDGE_CONTROL_PLANE_PEER_CIDRS: 10.66.0.0/24
       TRIEDGE_CONTROL_PLANE_TENANT_SOURCE_ADDRESS: ${TENANT_SOURCE}
+      TRIEDGE_CONTROL_PLANE_XDS_ADDRESS: 127.0.0.1
       TRIEDGE_CONTROL_PLANE_TRACING_COLLECTOR: ${OBS_IP}:4318
       TRIEDGE_CONTROL_PLANE_TRACING_SAMPLING: 10
-      <<: *tracing
+      <<: [*tracing, *listen]
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9100/actuator/health"]
+      test: ["CMD", "curl", "-fsS", "http://${SELF}:9100/actuator/health"]
       interval: 5s
       timeout: 2s
       retries: 3
@@ -217,7 +239,7 @@ services:
       SERVER_PORT: 8101
       TRIEDGE_CONTROL_PLANE_XDS_PORT: 18001
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9101/actuator/health"]
+      test: ["CMD", "curl", "-fsS", "http://${SELF}:9101/actuator/health"]
       interval: 5s
       timeout: 2s
       retries: 3
@@ -233,7 +255,7 @@ services:
         SERVICE: echo
     environment:
       TRIEDGE_ECHO_INSTANCE: echo-${REGION}
-      <<: *tracing
+      <<: [*tracing, *listen]
 
   envoy:
     image: envoyproxy/envoy:v1.39.4

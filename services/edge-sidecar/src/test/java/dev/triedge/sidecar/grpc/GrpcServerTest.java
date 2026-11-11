@@ -9,6 +9,7 @@ import io.envoyproxy.envoy.service.auth.v3.CheckResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.StreamObserver;
+import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -49,6 +50,22 @@ class GrpcServerTest {
             channel.shutdownNow();
         }
         server.stop();
+    }
+
+    @Test
+    void listensOnlyOnTheGivenAddress() {
+        GrpcServer local = new GrpcServer("127.0.0.1", 0, new AuthorizationGrpc.AuthorizationImplBase() {
+        }, 1);
+        local.start();
+        try {
+            assertThat(local.listenAddresses()).singleElement()
+                    .satisfies(address -> assertThat(((InetSocketAddress) address).getAddress().isLoopbackAddress()).isTrue());
+        } finally {
+            local.stop();
+        }
+        server.start();
+        assertThat(server.listenAddresses()).singleElement()
+                .satisfies(address -> assertThat(((InetSocketAddress) address).getAddress().isAnyLocalAddress()).isTrue());
     }
 
     @Test

@@ -5,6 +5,7 @@ import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.db.ClusterRoutingDataSource;
 import dev.triedge.common.db.HomeClusterFilter;
 import dev.triedge.common.etcd.EtcdClient;
+import dev.triedge.common.etcd.EtcdCredentials;
 import dev.triedge.common.http.RestClients;
 import dev.triedge.common.outbox.OutboxWriter;
 import java.time.Clock;
@@ -60,7 +61,8 @@ public class IdentityConfiguration {
 
     @Bean
     EtcdClient etcdClient(IdentityProperties properties, RestClient.Builder http) {
-        return new EtcdClient(RestClients.create(http, properties.etcdUrl(), properties.etcdTimeout()));
+        return new EtcdClient(RestClients.create(http, properties.etcdUrl(), properties.etcdTimeout()),
+                EtcdCredentials.of(properties.etcdUsername(), properties.etcdPassword()));
     }
 
     @Bean

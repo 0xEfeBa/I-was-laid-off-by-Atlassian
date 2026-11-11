@@ -9,6 +9,8 @@ import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.jspecify.annotations.Nullable;
@@ -18,17 +20,26 @@ import org.springframework.context.SmartLifecycle;
 
 public class XdsServer implements SmartLifecycle {
 
+    public static final String ALL_ADDRESSES = "0.0.0.0";
+
     private static final Logger log = LoggerFactory.getLogger(XdsServer.class);
 
     private final int port;
     private final SimpleCache<String> cache;
     private final AckTracker tracker;
     private final SnapshotPublisher publisher;
+    private final String address;
     private @Nullable HealthStatusManager health;
     private @Nullable Server server;
     private boolean running;
 
     public XdsServer(int port, SimpleCache<String> cache, AckTracker tracker, SnapshotPublisher publisher) {
+        this(ALL_ADDRESSES, port, cache, tracker, publisher);
+    }
+
+    public XdsServer(String address, int port, SimpleCache<String> cache, AckTracker tracker,
+            SnapshotPublisher publisher) {
+        this.address = address;
         this.port = port;
         this.cache = cache;
         this.tracker = tracker;
@@ -79,20 +90,24 @@ public class XdsServer implements SmartLifecycle {
         return server == null ? port : server.getPort();
     }
 
+    public synchronized List<? extends SocketAddress> listenAddresses() {
+        return server == null ? List.of() : server.getListenSockets();
+    }
+
     private void listen() {
         V3DiscoveryServer discovery = new V3DiscoveryServer(List.of(tracker), cache);
         health = new HealthStatusManager();
         try {
-            server = NettyServerBuilder.forPort(port)
+            server = NettyServerBuilder.forAddress(new InetSocketAddress(address, port))
                     .addService(discovery.getAggregatedDiscoveryServiceImpl())
                     .addService(health.getHealthService())
                     .build()
                     .start();
         } catch (IOException e) {
-            throw new UncheckedIOException("Could not start the xDS server on port " + port, e);
+            throw new UncheckedIOException("Could not start the xDS server on " + address + ":" + port, e);
         }
         health.setStatus(HealthStatusManager.SERVICE_NAME_ALL_SERVICES, ServingStatus.SERVING);
-        log.info("xDS server listening on port {}", server.getPort());
+        log.info("xDS server listening on {}:{}", address, server.getPort());
     }
 
     private void close(int graceSeconds) {

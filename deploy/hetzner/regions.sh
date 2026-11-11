@@ -136,7 +136,8 @@ prepare_state() {
   mkdir -p "$STATE"
   chmod 700 "$STATE"
   test -f "$STATE/id_ed25519" || ssh-keygen -q -t ed25519 -N "" -C "$PROJECT" -f "$STATE/id_ed25519"
-  for name in postgres replication patroni_api monitoring identity edge_sidecar broker control_plane; do
+  for name in postgres replication patroni_api monitoring identity edge_sidecar broker control_plane \
+    etcd_root etcd_patroni etcd_identity etcd_edge_sidecar etcd_broker etcd_control_plane; do
     new_secret "$name"
   done
   test -f "$STATE/signing.jwk" || (umask 077 && signing_jwk > "$STATE/signing.jwk")
@@ -251,6 +252,11 @@ write_env() {
     echo "BROKER_DB_PASSWORD=$(secret broker)"
     echo "CONTROL_PLANE_DB_PASSWORD=$(secret control_plane)"
     echo "IDENTITY_SIGNING_JWK=$(cat "$STATE/signing.jwk")"
+    echo "ETCD_PATRONI_PASSWORD=$(secret etcd_patroni)"
+    echo "ETCD_IDENTITY_PASSWORD=$(secret etcd_identity)"
+    echo "ETCD_EDGE_SIDECAR_PASSWORD=$(secret etcd_edge_sidecar)"
+    echo "ETCD_BROKER_PASSWORD=$(secret etcd_broker)"
+    echo "ETCD_CONTROL_PLANE_PASSWORD=$(secret etcd_control_plane)"
   } | remote "$region" "umask 077; cat > $REMOTE_DIR/region.env"
 }
 
@@ -275,11 +281,25 @@ wait_for_etcd() {
   exit 1
 }
 
+enable_etcd_auth() {
+  {
+    echo "ETCD_ROOT_PASSWORD=$(secret etcd_root)"
+    echo "ETCD_PATRONI_PASSWORD=$(secret etcd_patroni)"
+    echo "ETCD_IDENTITY_PASSWORD=$(secret etcd_identity)"
+    echo "ETCD_EDGE_SIDECAR_PASSWORD=$(secret etcd_edge_sidecar)"
+    echo "ETCD_BROKER_PASSWORD=$(secret etcd_broker)"
+    echo "ETCD_CONTROL_PLANE_PASSWORD=$(secret etcd_control_plane)"
+  } | remote eu "umask 077; cat > /tmp/etcd-auth.env"
+  remote eu "cd $REMOTE_DIR && set -a && . /tmp/etcd-auth.env && set +a && rm -f /tmp/etcd-auth.env \
+    && ETCDCTL='docker compose --project-directory . -f deploy/hetzner/region.compose.yaml --env-file region.env exec -T -e ETCDCTL_USER etcd etcdctl' \
+    sh deploy/etcd-auth.sh"
+}
+
 start_home_database() {
   local region=$1
   dc "$region" "up -d db-$region" >/dev/null 2>&1
   for _ in $(seq 1 90); do
-    if remote "$region" "curl -fs -o /dev/null http://127.0.0.1:$(rest_port "$region")/primary"; then
+    if remote "$region" "curl -fs -o /dev/null http://$(wg_ip "$region"):$(rest_port "$region")/primary"; then
       echo "Cluster $region has its leader in $region"
       return
     fi
@@ -305,7 +325,7 @@ start_replicas() {
 wait_for_replicas() {
   local cluster=$1
   for _ in $(seq 1 120); do
-    if [[ "$(remote "$cluster" "curl -fs http://127.0.0.1:$(rest_port "$cluster")/cluster" | python3 -c '
+    if [[ "$(remote "$cluster" "curl -fs http://$(wg_ip "$cluster"):$(rest_port "$cluster")/cluster" | python3 -c '
 import json, sys
 members = json.load(sys.stdin)["members"]
 print(sum(1 for m in members if m["role"] != "leader" and m["state"] == "streaming"))
@@ -393,6 +413,7 @@ up() {
   each build_images
   each start_etcd
   wait_for_etcd
+  enable_etcd_auth
   each start_home_database
   each start_replicas
   each wait_for_replicas
@@ -464,7 +485,7 @@ heal() {
   hcloud server poweron "$PROJECT-eu" >/dev/null
   wait_for_server eu
   for _ in $(seq 1 60); do
-    if remote us "curl -fs http://127.0.0.1:8009/cluster" >/dev/null 2>&1 \
+    if remote us "curl -fs http://$(wg_ip us):$(rest_port us)/cluster" >/dev/null 2>&1 \
       && [[ "$(dc us "exec -T db-eu /opt/patroni/bin/patronictl -c /etc/patroni.yml list -f json" | python3 -c '
 import json, sys
 print(next((m["State"] for m in json.load(sys.stdin) if m["Member"] == "eu-eu"), ""))')" == "streaming" ]]; then
@@ -500,6 +521,25 @@ logs() {
   dc "${1:-eu}" "logs --tail 100 ${2:-}"
 }
 
+exposed() {
+  require_token
+  local region open found=0
+  for region in $NODES; do
+    open=$(remote "$region" "ss -Htlnu" | awk '{print $1 " " $5}' \
+      | grep -Ev ' (\[::1\]|(\[::ffff:)?(127\.[0-9.]+|10\.66\.0\.[0-9]+|10\.99\.0\.1)(%[a-z0-9]+)?\]?):[0-9]+$' \
+      | grep -Ev '^tcp .*:(22|8080|9902)$|^udp .*:51820$' || true)
+    if [[ -n "$open" ]]; then
+      found=1
+      echo "$region listens on public addresses:"
+      sed 's/^/  /' <<< "$open"
+    fi
+  done
+  if [[ $found == 1 ]]; then
+    exit 1
+  fi
+  echo "Only SSH, the edge (8080), Envoy metrics (9902) and WireGuard listen on public addresses"
+}
+
 down() {
   require_token
   for region in $NODES; do
@@ -521,6 +561,7 @@ case "${1:-}" in
   status) status ;;
   logs) shift; logs "$@" ;;
   grafana) grafana ;;
+  exposed) exposed ;;
   down) down ;;
-  *) echo "Usage: deploy/hetzner/regions.sh {up|measure|test-db|test|heal|status|logs [region] [service]|grafana|down}" >&2; exit 1 ;;
+  *) echo "Usage: deploy/hetzner/regions.sh {up|measure|test-db|test|heal|status|logs [region] [service]|grafana|exposed|down}" >&2; exit 1 ;;
 esac

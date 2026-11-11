@@ -40,6 +40,8 @@ public final class TestProperties {
                 1024,
                 1,
                 Duration.ofSeconds(2),
-                Duration.ofSeconds(10));
+                Duration.ofSeconds(10),
+                null,
+                null);
     }
 }

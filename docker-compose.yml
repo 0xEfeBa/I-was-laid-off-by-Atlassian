@@ -25,6 +25,8 @@ services:
       - --data-dir=/etcd-data
       - --listen-client-urls=http://0.0.0.0:2379
       - --advertise-client-urls=http://etcd:2379
+    environment:
+      ETCDCTL_USER: edge-sidecar:${ETCD_EDGE_SIDECAR_PASSWORD:?run scripts/dev.sh up}
     ports:
       - "127.0.0.1:2379:2379"
     volumes:
@@ -121,6 +123,8 @@ services:
       TRIEDGE_CLUSTERS_EU_USERNAME: identity_service
       TRIEDGE_CLUSTERS_EU_PASSWORD: ${IDENTITY_DB_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_IDENTITY_ETCD_URL: http://etcd:2379
+      TRIEDGE_IDENTITY_ETCD_USERNAME: identity
+      TRIEDGE_IDENTITY_ETCD_PASSWORD: ${ETCD_IDENTITY_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_IDENTITY_ALLOW_EPHEMERAL_KEY: "true"
       TRIEDGE_IDENTITY_SECURE_COOKIES: "false"
       TRIEDGE_IDENTITY_ALLOWED_ORIGINS: http://localhost:5173
@@ -172,6 +176,8 @@ services:
       TRIEDGE_CLUSTERS_EU_USERNAME: control_plane
       TRIEDGE_CLUSTERS_EU_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_CONTROL_PLANE_ETCD_URL: http://etcd:2379
+      TRIEDGE_CONTROL_PLANE_ETCD_USERNAME: control-plane
+      TRIEDGE_CONTROL_PLANE_ETCD_PASSWORD: ${ETCD_CONTROL_PLANE_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_CONTROL_PLANE_SYSTEM_TENANTS_DIR: /etc/triedge/system-tenants
       TRIEDGE_CONTROL_PLANE_TRACING_COLLECTOR: tempo:4318
       MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
@@ -202,6 +208,8 @@ services:
       TRIEDGE_CLUSTERS_EU_USERNAME: control_plane
       TRIEDGE_CLUSTERS_EU_PASSWORD: ${CONTROL_PLANE_DB_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_CONTROL_PLANE_ETCD_URL: http://etcd:2379
+      TRIEDGE_CONTROL_PLANE_ETCD_USERNAME: control-plane
+      TRIEDGE_CONTROL_PLANE_ETCD_PASSWORD: ${ETCD_CONTROL_PLANE_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_CONTROL_PLANE_SYSTEM_TENANTS_DIR: /etc/triedge/system-tenants
       TRIEDGE_CONTROL_PLANE_TRACING_COLLECTOR: tempo:4318
       MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
@@ -232,6 +240,8 @@ services:
       TRIEDGE_CLUSTERS_EU_USERNAME: broker
       TRIEDGE_CLUSTERS_EU_PASSWORD: ${BROKER_DB_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_BROKER_ETCD_URL: http://etcd:2379
+      TRIEDGE_BROKER_ETCD_USERNAME: broker
+      TRIEDGE_BROKER_ETCD_PASSWORD: ${ETCD_BROKER_PASSWORD:?run scripts/dev.sh up}
       TRIEDGE_BROKER_CONTROL_PLANE_URLS: http://control-plane:8100,http://control-plane-2:8101
       MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://tempo:4318/v1/traces
     depends_on:

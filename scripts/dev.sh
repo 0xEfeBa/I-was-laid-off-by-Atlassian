@@ -24,6 +24,19 @@ ensure_env() {
   ensure_secret CONTROL_PLANE_DB_PASSWORD 16
   ensure_secret BROKER_DB_PASSWORD 16
   ensure_secret MONITORING_DB_PASSWORD 16
+  for name in ROOT PATRONI IDENTITY EDGE_SIDECAR BROKER CONTROL_PLANE; do
+    ensure_secret "ETCD_${name}_PASSWORD" 16
+  done
+}
+
+etcd_auth() {
+  docker compose up -d --wait etcd
+  (
+    set -a
+    source "$ENV_FILE"
+    set +a
+    ETCDCTL="docker compose exec -T -e ETCDCTL_USER etcd etcdctl" deploy/etcd-auth.sh
+  )
 }
 
 set_role_password() {
@@ -36,6 +49,7 @@ SQL
 
 up() {
   ensure_env
+  etcd_auth
   docker compose up -d --wait
   migrate
   echo "Ready. Grafana: http://localhost:3000"
@@ -58,6 +72,7 @@ app() {
   ensure_env
   ./gradlew --quiet :services:identity:bootJar :services:edge-sidecar:bootJar \
     :services:control-plane:bootJar :services:broker:bootJar :services:echo:bootJar
+  etcd_auth
   docker compose --profile app up -d --build
   echo "Waiting for the gateway on http://localhost:8080"
   for _ in $(seq 1 60); do

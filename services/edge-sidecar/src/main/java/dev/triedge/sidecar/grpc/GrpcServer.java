@@ -6,6 +6,9 @@ import io.grpc.Server;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -16,8 +19,11 @@ import org.springframework.context.SmartLifecycle;
 
 public class GrpcServer implements SmartLifecycle {
 
+    public static final String ALL_ADDRESSES = "0.0.0.0";
+
     private static final Logger log = LoggerFactory.getLogger(GrpcServer.class);
 
+    private final String address;
     private final int port;
     private final BindableService service;
     private final int threads;
@@ -25,6 +31,11 @@ public class GrpcServer implements SmartLifecycle {
     private @Nullable ExecutorService executor;
 
     public GrpcServer(int port, BindableService service, int threads) {
+        this(ALL_ADDRESSES, port, service, threads);
+    }
+
+    public GrpcServer(String address, int port, BindableService service, int threads) {
+        this.address = address;
         this.port = port;
         this.service = service;
         this.threads = threads;
@@ -34,16 +45,16 @@ public class GrpcServer implements SmartLifecycle {
     public synchronized void start() {
         executor = Executors.newFixedThreadPool(threads, Thread.ofPlatform().name("ext-authz-", 0).daemon().factory());
         try {
-            server = NettyServerBuilder.forPort(port)
+            server = NettyServerBuilder.forAddress(new InetSocketAddress(address, port))
                     .addService(service)
                     .executor(executor)
                     .build()
                     .start();
-            log.info("ext_authz gRPC server listening on port {} with {} threads", server.getPort(), threads);
+            log.info("ext_authz gRPC server listening on {}:{} with {} threads", address, server.getPort(), threads);
         } catch (IOException e) {
             executor.shutdownNow();
             executor = null;
-            throw new UncheckedIOException("Could not start the gRPC server on port " + port, e);
+            throw new UncheckedIOException("Could not start the gRPC server on " + address + ":" + port, e);
         }
     }
 
@@ -79,5 +90,9 @@ public class GrpcServer implements SmartLifecycle {
 
     public synchronized int port() {
         return server == null ? port : server.getPort();
+    }
+
+    public synchronized List<? extends SocketAddress> listenAddresses() {
+        return server == null ? List.of() : server.getListenSockets();
     }
 }

@@ -20,5 +20,7 @@ public record IdentityProperties(
         @DefaultValue("65536") int argon2MemoryKib,
         @DefaultValue("3") int argon2Iterations,
         @DefaultValue("PT2S") Duration etcdTimeout,
-        @DefaultValue("PT10S") Duration refreshReuseGrace) {
+        @DefaultValue("PT10S") Duration refreshReuseGrace,
+        @Nullable String etcdUsername,
+        @Nullable String etcdPassword) {
 }

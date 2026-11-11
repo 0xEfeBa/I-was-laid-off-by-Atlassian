@@ -2,6 +2,7 @@ package dev.triedge.broker.config;
 
 import java.time.Duration;
 import java.util.List;
+import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
@@ -14,5 +15,7 @@ public record BrokerProperties(
         @DefaultValue("PT30S") Duration jobLock,
         @DefaultValue("PT5S") Duration controlPlaneTimeout,
         @DefaultValue("/triedge/db") String leaderNamespace,
-        @DefaultValue("PT2S") Duration etcdTimeout) {
+        @DefaultValue("PT2S") Duration etcdTimeout,
+        @Nullable String etcdUsername,
+        @Nullable String etcdPassword) {
 }

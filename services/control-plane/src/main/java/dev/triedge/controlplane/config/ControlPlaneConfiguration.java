@@ -3,6 +3,7 @@ package dev.triedge.controlplane.config;
 import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.etcd.EtcdClient;
+import dev.triedge.common.etcd.EtcdCredentials;
 import dev.triedge.common.http.RestClients;
 import dev.triedge.controlplane.health.ControlPlaneHealth;
 import dev.triedge.common.outbox.OutboxMetrics;
@@ -118,7 +119,7 @@ public class ControlPlaneConfiguration {
     @Bean
     XdsServer xdsServer(ControlPlaneProperties properties, SimpleCache<String> cache, AckTracker tracker,
             SnapshotPublisher publisher) {
-        return new XdsServer(properties.xdsPort(), cache, tracker, publisher);
+        return new XdsServer(properties.xdsAddress(), properties.xdsPort(), cache, tracker, publisher);
     }
 
     @Bean
@@ -130,7 +131,8 @@ public class ControlPlaneConfiguration {
     AppliedReporter appliedReporter(SnapshotPublisher publisher, AckTracker tracker, ControlPlaneProperties properties,
             ClusterProperties clusters, RestClient.Builder http) {
         return new AppliedReporter(publisher, tracker,
-                new EtcdClient(RestClients.create(http, properties.etcdUrl(), properties.etcdTimeout())),
+                new EtcdClient(RestClients.create(http, properties.etcdUrl(), properties.etcdTimeout()),
+                        EtcdCredentials.of(properties.etcdUsername(), properties.etcdPassword())),
                 clusters.region());
     }
 

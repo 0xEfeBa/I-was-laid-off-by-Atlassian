@@ -22,7 +22,10 @@ public record SidecarProperties(
         @DefaultValue("PT1S") Duration leaderCacheTtl,
         @DefaultValue("PT2S") Duration jwksTimeout,
         @DefaultValue("PT2S") Duration etcdTimeout,
-        @DefaultValue("128") int grpcThreads) {
+        @DefaultValue("128") int grpcThreads,
+        @Nullable String etcdUsername,
+        @Nullable String etcdPassword,
+        @DefaultValue("0.0.0.0") String grpcAddress) {
 
     public SidecarProperties {
         if (issuer == null || issuer.isBlank()) {

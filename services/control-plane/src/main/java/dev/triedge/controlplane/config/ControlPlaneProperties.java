@@ -29,5 +29,8 @@ public record ControlPlaneProperties(
         @Nullable String tracingCollector,
         @DefaultValue("100") double tracingSampling,
         @DefaultValue("PT2S") Duration etcdTimeout,
-        @DefaultValue("PT60S") Duration maxFollowAge) {
+        @DefaultValue("PT60S") Duration maxFollowAge,
+        @Nullable String etcdUsername,
+        @Nullable String etcdPassword,
+        @DefaultValue("0.0.0.0") String xdsAddress) {
 }
