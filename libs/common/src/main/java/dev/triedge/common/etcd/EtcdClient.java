@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -13,6 +14,8 @@ import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 
 public class EtcdClient {
+
+    static final int MAX_TXN_OPERATIONS = 100;
 
     private final RestClient rest;
 
@@ -46,6 +49,18 @@ public class EtcdClient {
 
     public void delete(String key) {
         call("/v3/kv/deleterange", Map.of("key", encode(key)), Map.class);
+    }
+
+    public void apply(Map<String, String> puts, Collection<String> deletes) {
+        List<Map<String, Object>> operations = new ArrayList<>();
+        puts.forEach((key, value) -> operations.add(
+                Map.of("request_put", Map.of("key", encode(key), "value", encode(value)))));
+        deletes.forEach(key -> operations.add(Map.of("request_delete_range", Map.of("key", encode(key)))));
+        for (int start = 0; start < operations.size(); start += MAX_TXN_OPERATIONS) {
+            List<Map<String, Object>> chunk = operations.subList(start,
+                    Math.min(start + MAX_TXN_OPERATIONS, operations.size()));
+            call("/v3/kv/txn", Map.of("success", chunk), TxnResponse.class);
+        }
     }
 
     public boolean putIfAbsent(String key, String value) {

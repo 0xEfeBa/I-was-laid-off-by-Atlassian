@@ -4,6 +4,7 @@ import dev.triedge.common.etcd.EtcdClient;
 import dev.triedge.controlplane.xds.AckTracker;
 import dev.triedge.controlplane.xds.SnapshotPublisher;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,6 +21,7 @@ public class AppliedReporter {
     private final EtcdClient etcd;
     private final String region;
     private final Map<String, Integer> reported = new HashMap<>();
+    private boolean loaded;
 
     public AppliedReporter(SnapshotPublisher publisher, AckTracker tracker, EtcdClient etcd, String region) {
         this.publisher = publisher;
@@ -39,22 +41,46 @@ public class AppliedReporter {
             return;
         }
         try {
-            published.tenantVersions().forEach((tenant, version) -> {
+            if (!loaded) {
+                reported.clear();
+                reported.putAll(appliedHere());
+                loaded = true;
+            }
+            Map<String, Integer> live = published.tenantVersions();
+            Map<String, String> puts = new HashMap<>();
+            live.forEach((tenant, version) -> {
                 if (!version.equals(reported.get(tenant))) {
-                    etcd.put(key(tenant, region), Integer.toString(version));
-                    reported.put(tenant, version);
+                    puts.put(key(tenant, region), Integer.toString(version));
+                }
+            });
+            List<String> gone = reported.keySet().stream().filter(tenant -> !live.containsKey(tenant)).toList();
+            if (puts.isEmpty() && gone.isEmpty()) {
+                return;
+            }
+            etcd.apply(puts, gone.stream().map(tenant -> key(tenant, region)).toList());
+            live.forEach((tenant, version) -> {
+                if (!version.equals(reported.put(tenant, version))) {
                     log.info("Tenant {} version {} is live in {}", tenant, version, region);
                 }
             });
-            reported.keySet().removeIf(tenant -> {
-                if (published.tenantVersions().containsKey(tenant)) {
-                    return false;
-                }
-                etcd.delete(key(tenant, region));
-                return true;
-            });
+            gone.forEach(reported::remove);
         } catch (RuntimeException e) {
             log.warn("Could not report applied versions: {}", e.getMessage());
         }
+    }
+
+    private Map<String, Integer> appliedHere() {
+        String suffix = "/applied/" + region;
+        Map<String, Integer> found = new HashMap<>();
+        etcd.getPrefix(PREFIX).forEach((key, value) -> {
+            if (key.endsWith(suffix)) {
+                try {
+                    found.put(key.substring(PREFIX.length(), key.length() - suffix.length()), Integer.valueOf(value));
+                } catch (NumberFormatException e) {
+                    found.put(key.substring(PREFIX.length(), key.length() - suffix.length()), -1);
+                }
+            }
+        });
+        return found;
     }
 }

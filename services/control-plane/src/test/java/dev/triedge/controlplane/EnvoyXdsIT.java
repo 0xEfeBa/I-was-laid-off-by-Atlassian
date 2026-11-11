@@ -156,7 +156,7 @@ class EnvoyXdsIT {
 
         assertThat(body("t0.test")).isEqualTo("served t0.test");
         assertThat(status("unknown.test")).isEqualTo(404);
-        assertThat(status("t1.test", "/internal/x")).isEqualTo(404);
+        assertThat(status("t1.test", "/internal/x")).isEqualTo(200);
         eventually(() -> tracker.connectedNodes() == 1 && tracker.allSynced(publisher.latest().requiredAcks()));
     }
 
@@ -211,7 +211,8 @@ class EnvoyXdsIT {
         List<ActiveTenant> withPlatform = new ArrayList<>(tenants);
         withPlatform.addAll(SystemTenants.load(System.getProperty("triedge.system-tenants")));
         EnvoyResources multiRegion = new ConfigRenderer("eu", 10000, HOST, authz.getPort(),
-                Map.of("us", "10.66.0.2", "ap", "{host}.ap.internal")).render(withPlatform, true);
+                Map.of("us", "10.66.0.2", "ap", "{host}.ap.internal"), List.of("10.66.0.0/24"), "10.99.0.1",
+                new ConfigRenderer.Tracing(HOST, 4318, 10)).render(withPlatform, true);
         assertThat(multiRegion.clusters()).extracting(Cluster::getName).contains("tenant.platform.broker.us");
         assertThat(validate(BootstrapJson.of(multiRegion)).getExitCode()).isZero();
 

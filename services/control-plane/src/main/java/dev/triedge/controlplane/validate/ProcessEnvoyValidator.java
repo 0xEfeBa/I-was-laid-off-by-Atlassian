@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.jspecify.annotations.Nullable;
 
 public class ProcessEnvoyValidator implements EnvoyValidator {
 
@@ -22,18 +23,21 @@ public class ProcessEnvoyValidator implements EnvoyValidator {
     @Override
     public List<String> validate(EnvoyResources resources) {
         Path config = null;
+        Path log = null;
         try {
             config = Files.createTempFile("envoy-validate", ".json");
+            log = Files.createTempFile("envoy-validate", ".log");
             Files.writeString(config, BootstrapJson.of(resources));
             Process process = new ProcessBuilder(binary, "--mode", "validate", "-c", config.toString(),
                     "--log-level", "critical")
                     .redirectErrorStream(true)
+                    .redirectOutput(log.toFile())
                     .start();
             if (!process.waitFor(60, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 return List.of("Envoy validation timed out");
             }
-            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            String output = Files.readString(log, StandardCharsets.UTF_8);
             if (process.exitValue() == 0) {
                 return List.of();
             }
@@ -46,13 +50,19 @@ public class ProcessEnvoyValidator implements EnvoyValidator {
             Thread.currentThread().interrupt();
             return List.of("Envoy validation was interrupted");
         } finally {
-            if (config != null) {
-                try {
-                    Files.deleteIfExists(config);
-                } catch (IOException ignored) {
-                    config.toFile().deleteOnExit();
-                }
-            }
+            delete(config);
+            delete(log);
+        }
+    }
+
+    private static void delete(@Nullable Path file) {
+        if (file == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException ignored) {
+            file.toFile().deleteOnExit();
         }
     }
 }

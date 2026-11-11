@@ -38,7 +38,9 @@ test("a tenant goes live, changes, rolls back and disappears", async ({ request,
   const signedIn = await viaHost(request, host, "/private", bearer(user.accessToken));
   expect(signedIn.status()).toBe(200);
   expect(((await signedIn.json()) as { headers: Record<string, string> }).headers["x-user-id"]).toBe(user.id);
-  expect((await viaHost(request, host, "/internal/metrics")).status()).toBe(404);
+  const ownInternal = await viaHost(request, host, "/internal/metrics");
+  expect(ownInternal.status()).toBe(200);
+  expect(((await ownInternal.json()) as { path: string }).path).toBe("/internal/metrics");
 
   const updated = await request.patch(`/v2/service_instances/${name}?accepts_incomplete=true`, {
     headers,

@@ -94,6 +94,9 @@ public class ControlPlaneConfiguration {
             FunctionCounter.builder("triedge.xds.nacks", tracker, AckTracker::totalNacks)
                     .description("Configurations rejected by a proxy")
                     .register(registry);
+            FunctionCounter.builder("triedge.xds.publish.failures", publisher, SnapshotPublisher::failures)
+                    .description("Configurations that could not be built and were not published")
+                    .register(registry);
         };
     }
 

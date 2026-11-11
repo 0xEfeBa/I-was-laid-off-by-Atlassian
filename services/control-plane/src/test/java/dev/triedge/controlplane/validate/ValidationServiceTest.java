@@ -1,6 +1,7 @@
 package dev.triedge.controlplane.validate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -70,6 +71,53 @@ class ValidationServiceTest {
 
         assertThat(service.validate(spec("shop", "shop.test", "api.t-shop.svc")))
                 .isEqualTo(new ValidationService.Outcome(false, List.of("cluster: invalid")));
+    }
+
+    @Test
+    void aBrokenCandidateGetsOnlyItsOwnErrors() {
+        ValidationService checked = serviceRejecting("shop");
+
+        ValidationService.Outcome outcome = checked.validate(spec("shop", "shop.test", "api.t-shop.svc"));
+
+        assertThat(outcome.valid()).isFalse();
+        assertThat(outcome.errors()).containsExactly("tenant.shop is broken");
+    }
+
+    @Test
+    void aBrokenExistingTenantDoesNotBlockOthersAndIsNotShown() {
+        ValidationService checked = serviceRejecting("blog");
+
+        assertThatThrownBy(() -> checked.validate(spec("shop", "shop.test", "api.t-shop.svc")))
+                .isInstanceOf(ValidationService.ValidationUnavailable.class)
+                .message().doesNotContain("blog");
+    }
+
+    @Test
+    void aConflictWithAnotherTenantDoesNotRevealIt() {
+        ValidationService checked = new ValidationService(directory,
+                new NamespaceOwnershipCheck(List.of()),
+                new ConfigRenderer("eu", 8080, "edge-sidecar", 9001),
+                resources -> clusterNames(resources).containsAll(List.of("tenant.blog.main", "tenant.shop.main"))
+                        ? List.of("tenant.blog.main and tenant.shop.main collide")
+                        : List.of());
+
+        ValidationService.Outcome outcome = checked.validate(spec("shop", "shop.test", "api.t-shop.svc"));
+
+        assertThat(outcome.valid()).isFalse();
+        assertThat(outcome.errors()).singleElement().asString()
+                .contains("conflicts with another tenant").doesNotContain("blog");
+    }
+
+    private ValidationService serviceRejecting(String tenant) {
+        return new ValidationService(directory, new NamespaceOwnershipCheck(List.of()),
+                new ConfigRenderer("eu", 8080, "edge-sidecar", 9001),
+                resources -> clusterNames(resources).contains("tenant." + tenant + ".main")
+                        ? List.of("tenant." + tenant + " is broken")
+                        : List.of());
+    }
+
+    private static List<String> clusterNames(EnvoyResources resources) {
+        return resources.clusters().stream().map(c -> c.getName()).toList();
     }
 
     private static TenantSpec spec(String name, String host, String backendHost) {

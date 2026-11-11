@@ -4,6 +4,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.util.JsonFormat;
 import dev.triedge.controlplane.render.EnvoyResources;
 import io.envoyproxy.envoy.config.bootstrap.v3.Bootstrap;
+import io.envoyproxy.envoy.config.trace.v3.OpenTelemetryConfig;
 import io.envoyproxy.envoy.extensions.filters.http.ext_authz.v3.ExtAuthz;
 import io.envoyproxy.envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute;
 import io.envoyproxy.envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit;
@@ -21,6 +22,7 @@ public final class BootstrapJson {
                     .add(LocalRateLimit.getDescriptor())
                     .add(Router.getDescriptor())
                     .add(HttpProtocolOptions.getDescriptor())
+                    .add(OpenTelemetryConfig.getDescriptor())
                     .build())
             .omittingInsignificantWhitespace();
 

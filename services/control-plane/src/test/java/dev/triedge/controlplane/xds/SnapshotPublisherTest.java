@@ -11,6 +11,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +42,31 @@ class SnapshotPublisherTest {
                 .containsEntry(Resources.V3.LISTENER_TYPE_URL, 1L);
         assertThat(second.tenantVersions()).containsEntry("blog", 1);
         assertThat(publisher.latest()).isEqualTo(second);
+    }
+
+    @Test
+    void aFailedPublishIsCountedAndTheNextOneWorks() throws InterruptedException {
+        AtomicBoolean broken = new AtomicBoolean(true);
+        try (SnapshotPublisher fragile = new SnapshotPublisher(cache, new ConfigRenderer("eu", 8080, "sidecar", 9001),
+                () -> {
+                    if (broken.get()) {
+                        throw new IllegalStateException("cannot render");
+                    }
+                    return tenants;
+                }, Duration.ofMillis(10))) {
+            fragile.requestPublish();
+            Thread.sleep(200);
+
+            assertThat(fragile.failures()).isEqualTo(1);
+            assertThat(fragile.latest()).isNull();
+
+            broken.set(false);
+            fragile.requestPublish();
+            Thread.sleep(200);
+
+            assertThat(fragile.latest()).isNotNull();
+            assertThat(fragile.failures()).isEqualTo(1);
+        }
     }
 
     @Test

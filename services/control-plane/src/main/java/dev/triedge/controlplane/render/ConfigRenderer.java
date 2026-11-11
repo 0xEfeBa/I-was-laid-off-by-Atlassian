@@ -179,9 +179,9 @@ public class ConfigRenderer {
         for (ActiveTenant tenant : tenants) {
             VirtualHost.Builder host = VirtualHost.newBuilder()
                     .setName("tenant." + tenant.name())
-                    .addAllDomains(tenant.spec().hosts())
-                    .addRoutes(notFound("/internal/"));
+                    .addAllDomains(tenant.spec().hosts());
             if (tenant.system()) {
+                host.addRoutes(notFound("/internal/"));
                 addSystemRoutes(host, tenant);
             } else {
                 addUserRoutes(host, tenant);

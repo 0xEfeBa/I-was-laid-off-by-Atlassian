@@ -6,6 +6,10 @@ import dev.triedge.controlplane.xds.AckTracker;
 import dev.triedge.controlplane.xds.SnapshotPublisher;
 import dev.triedge.tenant.TenantSpecParser;
 import java.util.List;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -37,6 +41,12 @@ public class InternalController {
             case TenantSpecParser.Result.Invalid invalid -> new ValidationService.Outcome(false, invalid.errors());
             case TenantSpecParser.Result.Valid valid -> validation.validate(valid.spec());
         };
+    }
+
+    @ExceptionHandler(ValidationService.ValidationUnavailable.class)
+    public ResponseEntity<ProblemDetail> unavailable(ValidationService.ValidationUnavailable e) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, e.getMessage()));
     }
 
     @GetMapping("/internal/v1/status")

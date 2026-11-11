@@ -3,6 +3,8 @@ package dev.triedge.common.etcd;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.triedge.common.testing.TestEtcd;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -14,6 +16,22 @@ class EtcdClientIT {
     @BeforeEach
     void clean() {
         TestEtcd.deletePrefix("/test/");
+    }
+
+    @Test
+    void appliesManyPutsAndDeletesInBatches() {
+        etcd.put("/test/gone-1", "x");
+        etcd.put("/test/gone-2", "x");
+        Map<String, String> puts = new LinkedHashMap<>();
+        for (int i = 0; i < 250; i++) {
+            puts.put("/test/key-" + i, Integer.toString(i));
+        }
+
+        etcd.apply(puts, List.of("/test/gone-1", "/test/gone-2"));
+
+        Map<String, String> stored = etcd.getPrefix("/test/");
+        assertThat(stored).hasSize(250).containsEntry("/test/key-0", "0").containsEntry("/test/key-249", "249");
+        assertThat(stored).doesNotContainKeys("/test/gone-1", "/test/gone-2");
     }
 
     @Test

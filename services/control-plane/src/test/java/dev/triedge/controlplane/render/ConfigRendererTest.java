@@ -41,26 +41,30 @@ class ConfigRendererTest {
             new TenantSpec.Hook("authz.t-shop.svc", 9002, true));
 
     @Test
-    void everyTenantGetsAVirtualHostWithInternalPathsBlockedFirst() {
+    void everyTenantGetsAVirtualHostAndOnlyPlatformHostsBlockInternalPaths() {
+        ActiveTenant platform = new ActiveTenant(UUID.randomUUID(), "platform", 1,
+                TestTenants.tenant("platform", "api.test", "identity", 8130).spec(), true);
         RouteConfiguration routes = routes(List.of(TestTenants.tenant("shop", 3, shop),
-                TestTenants.tenant("blog", "blog.test", "blog.t-blog.svc", 80)));
+                TestTenants.tenant("blog", "blog.test", "blog.t-blog.svc", 80), platform));
 
         assertThat(routes.getVirtualHostsList()).extracting(VirtualHost::getName)
-                .containsExactly("tenant.blog", "tenant.shop", "unknown-host");
-        VirtualHost host = routes.getVirtualHosts(1);
+                .containsExactly("tenant.blog", "tenant.platform", "tenant.shop", "unknown-host");
+        VirtualHost platformHost = routes.getVirtualHosts(1);
+        assertThat(platformHost.getRoutes(0).getMatch().getPrefix()).isEqualTo("/internal/");
+        assertThat(platformHost.getRoutes(0).getDirectResponse().getStatus()).isEqualTo(404);
+        assertThat(platformHost.getRoutes(0).getTypedPerFilterConfigMap()).containsKey("envoy.filters.http.ext_authz");
+        VirtualHost host = routes.getVirtualHosts(2);
         assertThat(host.getDomainsList()).containsExactly("shop.test");
-        assertThat(host.getRoutes(0).getMatch().getPrefix()).isEqualTo("/internal/");
-        assertThat(host.getRoutes(0).getDirectResponse().getStatus()).isEqualTo(404);
-        assertThat(host.getRoutes(0).getTypedPerFilterConfigMap()).containsKey("envoy.filters.http.ext_authz");
-        assertThat(routes.getVirtualHosts(2).getDomainsList()).containsExactly("*");
+        assertThat(host.getRoutesList()).noneMatch(route -> route.getMatch().getPrefix().equals("/internal/"));
+        assertThat(routes.getVirtualHosts(3).getDomainsList()).containsExactly("*");
         assertThat(routes.getResponseHeadersToAdd(0).getHeader().getValue()).isEqualTo("eu");
     }
 
     @Test
     void routesCarryMatchersTimeoutsAndTheSidecarRule() {
         VirtualHost host = routes(List.of(TestTenants.tenant("shop", 3, shop))).getVirtualHosts(0);
-        Route orders = host.getRoutes(1);
-        Route health = host.getRoutes(2);
+        Route orders = host.getRoutes(0);
+        Route health = host.getRoutes(1);
 
         assertThat(orders.getMatch().getPathSeparatedPrefix()).isEqualTo("/orders");
         assertThat(orders.getMatch().getHeaders(0).getName()).isEqualTo(":method");
@@ -125,7 +129,7 @@ class ConfigRendererTest {
                 null);
         VirtualHost host = routes(List.of(TestTenants.tenant("auth", 1, limited))).getVirtualHosts(0);
 
-        LocalRateLimit limit = host.getRoutes(1).getTypedPerFilterConfigOrThrow("envoy.filters.http.local_ratelimit")
+        LocalRateLimit limit = host.getRoutes(0).getTypedPerFilterConfigOrThrow("envoy.filters.http.local_ratelimit")
                 .unpack(LocalRateLimit.class);
         assertThat(limit.getAlwaysConsumeDefaultTokenBucket().getValue()).isFalse();
         assertThat(limit.getFilterEnabled().getDefaultValue().getNumerator()).isEqualTo(100);
@@ -138,7 +142,6 @@ class ConfigRendererTest {
         assertThat(perClient.getTokenBucket().getTokensPerFill().getValue()).isEqualTo(20);
         assertThat(perClient.getTokenBucket().getFillInterval().getSeconds()).isEqualTo(60);
         assertThat(limit.getMaxDynamicDescriptors().getValue()).isPositive();
-        assertThat(host.getRoutes(0).getTypedPerFilterConfigMap()).doesNotContainKey("envoy.filters.http.local_ratelimit");
     }
 
     @Test
@@ -216,14 +219,14 @@ class ConfigRendererTest {
         VirtualHost host = resources.routes().getFirst().getVirtualHosts(0);
 
         assertThat(host.getRoutesList()).extracting(r -> r.getRoute().getCluster())
-                .containsExactly("", "edge.us", "");
-        Route forward = host.getRoutes(1);
+                .containsExactly("edge.us", "");
+        Route forward = host.getRoutes(0);
         assertThat(forward.getMatch().getHeaders(0).getName()).isEqualTo(ConfigRenderer.HOP_HEADER);
         assertThat(forward.getMatch().getHeaders(0).getInvertMatch()).isTrue();
         assertThat(forward.getRequestHeadersToAdd(0).getHeader().getKey()).isEqualTo(ConfigRenderer.HOP_HEADER);
         assertThat(forward.getRequestHeadersToAdd(0).getHeader().getValue()).isEqualTo("eu");
         assertThat(forward.getResponseHeadersToAddList()).isEmpty();
-        assertThat(host.getRoutes(2).getDirectResponse().getStatus()).isEqualTo(508);
+        assertThat(host.getRoutes(1).getDirectResponse().getStatus()).isEqualTo(508);
         assertThat(resources.clusters()).extracting(Cluster::getName)
                 .contains("edge.us", "edge.ap").doesNotContain("edge.eu", "tenant.blog.web");
         Cluster edge = resources.clusters().stream().filter(c -> c.getName().equals("edge.us")).findFirst().orElseThrow();
@@ -239,12 +242,12 @@ class ConfigRendererTest {
                 .routes().getFirst().getVirtualHosts(0);
 
         assertThat(host.getRoutesList()).extracting(r -> r.getRoute().getCluster())
-                .containsExactly("", "edge.us", "tenant.shop.api", "tenant.shop.api");
-        Route home = host.getRoutes(1);
+                .containsExactly("edge.us", "tenant.shop.api", "tenant.shop.api");
+        Route home = host.getRoutes(0);
         assertThat(home.getMatch().getHeadersList()).extracting(HeaderMatcher::getName)
                 .contains(ConfigRenderer.TARGET_REGION_HEADER, ConfigRenderer.HOP_HEADER);
-        assertThat(home.getMetadata()).isEqualTo(host.getRoutes(2).getMetadata());
-        assertThat(host.getRoutes(2).getResponseHeadersToAdd(0).getHeader().getKey())
+        assertThat(home.getMetadata()).isEqualTo(host.getRoutes(1).getMetadata());
+        assertThat(host.getRoutes(1).getResponseHeadersToAdd(0).getHeader().getKey())
                 .isEqualTo(ConfigRenderer.SERVED_BY_HEADER);
     }
 
@@ -258,8 +261,8 @@ class ConfigRendererTest {
 
         VirtualHost host = routes(List.of(TestTenants.tenant("far", 1, far))).getVirtualHosts(0);
 
-        assertThat(host.getRoutesList()).hasSize(2);
-        assertThat(host.getRoutes(1).getDirectResponse().getStatus()).isEqualTo(503);
+        assertThat(host.getRoutesList()).hasSize(1);
+        assertThat(host.getRoutes(0).getDirectResponse().getStatus()).isEqualTo(503);
     }
 
     @Test
@@ -305,8 +308,8 @@ class ConfigRendererTest {
 
         VirtualHost host = routes(List.of(TestTenants.tenant("docs", 1, docs))).getVirtualHosts(0);
 
-        assertThat(host.getRoutes(1).getMatch().getPathSeparatedPrefix()).isEqualTo("/api");
-        assertThat(host.getRoutes(2).getMatch().getPrefix()).isEqualTo("/files/");
+        assertThat(host.getRoutes(0).getMatch().getPathSeparatedPrefix()).isEqualTo("/api");
+        assertThat(host.getRoutes(1).getMatch().getPrefix()).isEqualTo("/files/");
     }
 
     @Test

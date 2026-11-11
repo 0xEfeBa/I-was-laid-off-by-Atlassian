@@ -10,6 +10,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -34,6 +35,18 @@ class ProcessEnvoyValidatorTest {
 
         assertThat(new ProcessEnvoyValidator(envoy.toString()).validate(resources))
                 .containsExactly("starting", "error initializing configuration: bad cluster");
+    }
+
+    @Test
+    void aLotOfOutputDoesNotBlockEnvoy() throws IOException {
+        Path envoy = script("i=0; while [ $i -lt 4000 ]; do echo \"line $i of a long complaint about the configuration\"; "
+                + "i=$((i+1)); done; exit 1");
+
+        long started = System.nanoTime();
+        List<String> errors = new ProcessEnvoyValidator(envoy.toString()).validate(resources);
+
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(10));
+        assertThat(errors).hasSize(20).last().asString().startsWith("line 3999");
     }
 
     @Test

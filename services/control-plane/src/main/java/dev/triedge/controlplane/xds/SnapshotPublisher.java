@@ -15,6 +15,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -39,6 +40,7 @@ public class SnapshotPublisher implements AutoCloseable {
         return thread;
     });
     private final AtomicBoolean scheduled = new AtomicBoolean();
+    private final AtomicLong failures = new AtomicLong();
     private final Map<String, Integer> typeHashes = new HashMap<>();
     private final Map<String, Long> lastChanged = new HashMap<>();
     private long version;
@@ -54,7 +56,20 @@ public class SnapshotPublisher implements AutoCloseable {
 
     public void requestPublish() {
         if (scheduled.compareAndSet(false, true)) {
-            executor.schedule(this::publishNow, coalesce.toMillis(), TimeUnit.MILLISECONDS);
+            executor.schedule(this::publishSafely, coalesce.toMillis(), TimeUnit.MILLISECONDS);
+        }
+    }
+
+    public long failures() {
+        return failures.get();
+    }
+
+    private void publishSafely() {
+        try {
+            publishNow();
+        } catch (RuntimeException e) {
+            failures.incrementAndGet();
+            log.error("Could not publish the configuration; proxies keep version v{}", version(), e);
         }
     }
 

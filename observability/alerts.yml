@@ -38,6 +38,12 @@ groups:
         annotations:
           summary: "{{ $labels.service }} in {{ $labels.region }} has not read the {{ $labels.outbox }} outbox of {{ $labels.cluster }} for over 10 s"
 
+      - alert: ConfigurationNotPublished
+        expr: increase(triedge_xds_publish_failures_total[5m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "The control plane in {{ $labels.region }} could not build a configuration; proxies keep the previous one"
+
       - alert: OutboxEventSkipped
         expr: increase(triedge_outbox_skipped_total[10m]) > 0
         labels: { severity: critical }
