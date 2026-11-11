@@ -1,13 +1,17 @@
 package dev.triedge.controlplane.source;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.triedge.common.db.ClusterConnection;
 import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.common.outbox.OutboxWriter;
 import dev.triedge.common.testing.TestDatabase;
 import dev.triedge.tenant.TenantSpecParser;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.sql.Connection;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -37,10 +42,14 @@ class TenantDirectoryIT {
     void start() {
         suffix = UUID.randomUUID().toString().substring(0, 6);
         clusters = new ClusterDataSources(Map.of("eu", TestDatabase.connection(2)));
-        List<ActiveTenant> system = SystemTenants.load(System.getProperty("triedge.system-tenants"));
-        directory = new TenantDirectory(clusters, system, JsonMapper.builder().build(), Duration.ofMillis(100),
-                java.time.Clock.systemUTC(), new OutboxMetrics(registry, "platform", java.time.Clock.systemUTC()));
+        directory = directory(clusters);
         directory.onChange(changes::incrementAndGet);
+    }
+
+    private TenantDirectory directory(ClusterDataSources source) {
+        List<ActiveTenant> system = SystemTenants.load(System.getProperty("triedge.system-tenants"));
+        return new TenantDirectory(source, system, JsonMapper.builder().build(), Duration.ofMillis(100),
+                Duration.ofHours(1), Clock.systemUTC(), new OutboxMetrics(registry, "platform", Clock.systemUTC()));
     }
 
     @AfterEach
@@ -65,7 +74,7 @@ class TenantDirectoryIT {
         activate(existing, "a" + suffix, 2);
         UUID later = createTenant("b" + suffix, 1);
         activate(later, "b" + suffix, 1);
-        directory.follow();
+        directory.follow("eu");
 
         assertThat(directory.get("a" + suffix)).hasValueSatisfying(t -> assertThat(t.version()).isEqualTo(2));
         assertThat(directory.get("b" + suffix)).isPresent();
@@ -76,10 +85,11 @@ class TenantDirectoryIT {
                 "{\"tenantId\":\"%s\",\"name\":\"b%s\"}".formatted(later, suffix)));
         transactions.executeWithoutResult(s -> outbox.append("tenant", "x", "TENANT_DELETED",
                 "{\"tenantId\":\"%s\",\"name\":\"platform\"}".formatted(UUID.randomUUID())));
-        directory.follow();
+        directory.follow("eu");
 
         assertThat(directory.get("b" + suffix)).isEmpty();
-        assertThat(directory.get("platform")).isPresent();        assertThat(registry.get("triedge.outbox.delay").tags("cluster", "eu").timer().count()).isPositive();
+        assertThat(directory.get("platform")).isPresent();
+        assertThat(registry.get("triedge.outbox.delay").tags("cluster", "eu").timer().count()).isPositive();
         assertThat(registry.get("triedge.outbox.last.read").tags("cluster", "eu").timeGauge().value()).isPositive();
     }
 
@@ -103,8 +113,62 @@ class TenantDirectoryIT {
     }
 
     @Test
+    void aBrokenEventIsSkippedAndTheNextOneIsApplied() {
+        directory.start();
+        transactions.executeWithoutResult(s -> outbox.append("tenant", "x", "TENANT_DELETED", "{\"name\":\"x\"}"));
+        UUID later = createTenant("d" + suffix, 1);
+        activate(later, "d" + suffix, 1);
+
+        directory.follow("eu");
+
+        assertThat(directory.get("d" + suffix)).isPresent();
+        assertThat(registry.get("triedge.outbox.skipped").tags("type", "TENANT_DELETED").counter().count())
+                .isEqualTo(1);
+    }
+
+    @Test
+    void anEventIsRetriedWhenTheDatabaseFailsWhileApplyingIt() throws Exception {
+        ClusterConnection base = TestDatabase.connection(1);
+        ClusterConnection impatient = new ClusterConnection(base.url() + (base.url().contains("?") ? "&" : "?")
+                + "options=-c%20statement_timeout%3D500", base.username(), base.password(), 1);
+        try (ClusterDataSources source = new ClusterDataSources(Map.of("eu", impatient))) {
+            TenantDirectory impatientDirectory = directory(source);
+            impatientDirectory.start();
+            UUID tenant = createTenant("e" + suffix, 1);
+            activate(tenant, "e" + suffix, 1);
+
+            try (Connection lock = TestDatabase.dataSource().getConnection()) {
+                lock.setAutoCommit(false);
+                lock.createStatement().execute("LOCK TABLE platform.tenant_versions IN ACCESS EXCLUSIVE MODE");
+                assertThatThrownBy(() -> impatientDirectory.follow("eu")).isInstanceOf(DataAccessException.class);
+                lock.rollback();
+            }
+            impatientDirectory.follow("eu");
+
+            assertThat(impatientDirectory.get("e" + suffix)).isPresent();
+            impatientDirectory.stop();
+        }
+    }
+
+    @Test
+    void deletingAnOldTenantKeepsTheNewOneWithTheSameName() {
+        String name = "f" + suffix;
+        UUID old = createTenant(name, 1);
+        directory.start();
+        jdbc.sql("UPDATE platform.tenants SET deleted_at = now() WHERE id = :id").param("id", old).update();
+        UUID replacement = createTenant(name, 1);
+        activate(replacement, name, 1);
+        transactions.executeWithoutResult(s -> outbox.append("tenant", old.toString(), "TENANT_DELETED",
+                "{\"tenantId\":\"%s\",\"name\":\"%s\"}".formatted(old, name)));
+
+        directory.follow("eu");
+
+        assertThat(directory.get(name)).hasValueSatisfying(t -> assertThat(t.id()).isEqualTo(replacement));
+    }
+
+    @Test
     void followingDoesNothingBeforeStart() {
-        directory.follow();
+        directory.follow("eu");
 
         assertThat(directory.all()).isEmpty();
     }

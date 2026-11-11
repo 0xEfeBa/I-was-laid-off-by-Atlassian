@@ -37,3 +37,9 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "{{ $labels.service }} in {{ $labels.region }} has not read the {{ $labels.outbox }} outbox of {{ $labels.cluster }} for over 10 s"
+
+      - alert: OutboxEventSkipped
+        expr: increase(triedge_outbox_skipped_total[10m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.service }} in {{ $labels.region }} skipped a broken {{ $labels.type }} event from {{ $labels.cluster }}; find it in the logs"

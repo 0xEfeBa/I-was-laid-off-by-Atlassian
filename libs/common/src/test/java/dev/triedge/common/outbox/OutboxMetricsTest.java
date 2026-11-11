@@ -35,6 +35,15 @@ class OutboxMetricsTest {
         assertThat(delay.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(1500);
     }
 
+    @Test
+    void countsSkippedEventsByType() {
+        metrics.skipped("us", event(NOW));
+        metrics.skipped("us", event(NOW));
+
+        assertThat(registry.get("triedge.outbox.skipped").tags("cluster", "us", "type", "TENANT_DELETED").counter()
+                .count()).isEqualTo(2);
+    }
+
     private static OutboxEvent event(Instant createdAt) {
         return new OutboxEvent(1, 1, "tenant", "shop", "TENANT_DELETED", "{}", createdAt);
     }

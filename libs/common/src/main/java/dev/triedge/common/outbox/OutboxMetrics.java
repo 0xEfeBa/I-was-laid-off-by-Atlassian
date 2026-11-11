@@ -1,5 +1,6 @@
 package dev.triedge.common.outbox;
 
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.TimeGauge;
 import io.micrometer.core.instrument.Timer;
@@ -31,6 +32,14 @@ public class OutboxMetrics {
     public void applied(String cluster, OutboxEvent event) {
         Duration delay = Duration.between(event.createdAt(), clock.instant());
         delays.computeIfAbsent(cluster, this::delayTimer).record(delay.isNegative() ? Duration.ZERO : delay);
+    }
+
+    public void skipped(String cluster, OutboxEvent event) {
+        Counter.builder("triedge.outbox.skipped")
+                .description("Outbox events that could not be applied and were skipped")
+                .tags("outbox", outbox, "cluster", cluster, "type", event.eventType())
+                .register(registry)
+                .increment();
     }
 
     private AtomicLong lastReadGauge(String cluster) {

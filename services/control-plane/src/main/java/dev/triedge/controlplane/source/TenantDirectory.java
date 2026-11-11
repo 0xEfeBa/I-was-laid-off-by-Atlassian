@@ -2,6 +2,7 @@ package dev.triedge.controlplane.source;
 
 import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.outbox.Checkpoint;
+import dev.triedge.common.outbox.ClusterFollower;
 import dev.triedge.common.outbox.OutboxEvent;
 import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.common.outbox.OutboxTailer;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -24,9 +26,9 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
@@ -49,6 +51,7 @@ public class TenantDirectory implements SmartLifecycle {
     private final List<ActiveTenant> systemTenants;
     private final JsonMapper json;
     private final Duration retryDelay;
+    private final Duration pollInterval;
     private final Clock clock;
     private final OutboxMetrics metrics;
     private final Map<String, ActiveTenant> tenants = new ConcurrentHashMap<>();
@@ -57,20 +60,26 @@ public class TenantDirectory implements SmartLifecycle {
     private final List<Runnable> listeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean running = new AtomicBoolean();
     private final Map<String, Instant> caughtUp = new ConcurrentHashMap<>();
-    private volatile @Nullable Instant lastFollow;
+    private volatile @Nullable ClusterFollower follower;
 
     public TenantDirectory(ClusterDataSources clusters, List<ActiveTenant> systemTenants, JsonMapper json,
-            Duration retryDelay, Clock clock, OutboxMetrics metrics) {
+            Duration retryDelay, Duration pollInterval, Clock clock, OutboxMetrics metrics) {
         this.clusters = clusters;
         this.systemTenants = systemTenants;
         this.json = json;
         this.retryDelay = retryDelay;
+        this.pollInterval = pollInterval;
         this.clock = clock;
         this.metrics = metrics;
     }
 
-    public @Nullable Instant lastFollow() {
-        return lastFollow;
+    public Set<String> clusters() {
+        return clusters.clusters();
+    }
+
+    public Map<String, Instant> lastRounds() {
+        ClusterFollower current = follower;
+        return current == null ? Map.of() : current.lastRounds();
     }
 
     public Map<String, Instant> caughtUp() {
@@ -105,15 +114,22 @@ public class TenantDirectory implements SmartLifecycle {
             caughtUp.put(cluster, clock.instant());
             metrics.read(cluster);
         }
-        lastFollow = clock.instant();
         running.set(true);
         log.info("Loaded {} tenants ({} system)", tenants.size(), systemTenants.size());
         notifyListeners();
+        ClusterFollower started = new ClusterFollower("tenant-events", clusters.clusters(), pollInterval, clock,
+                this::follow);
+        started.start();
+        follower = started;
     }
 
     @Override
     public void stop() {
         running.set(false);
+        ClusterFollower current = follower;
+        if (current != null) {
+            current.close();
+        }
     }
 
     @Override
@@ -126,22 +142,13 @@ public class TenantDirectory implements SmartLifecycle {
         return PHASE;
     }
 
-    @Scheduled(fixedDelayString = "${triedge.control-plane.poll-interval:PT0.2S}")
-    public void follow() {
+    void follow(String cluster) {
         if (!running.get()) {
             return;
         }
-        boolean changed = false;
-        for (String cluster : clusters.clusters()) {
-            try {
-                changed |= catchUp(cluster);
-                caughtUp.put(cluster, clock.instant());
-                metrics.read(cluster);
-            } catch (RuntimeException e) {
-                log.warn("Could not read tenant events from {}: {}", cluster, e.getMessage());
-            }
-        }
-        lastFollow = clock.instant();
+        boolean changed = catchUp(cluster);
+        caughtUp.put(cluster, clock.instant());
+        metrics.read(cluster);
         if (changed) {
             notifyListeners();
         }
@@ -153,8 +160,16 @@ public class TenantDirectory implements SmartLifecycle {
         do {
             batch = tailers.get(cluster).poll(positions.get(cluster));
             for (OutboxEvent event : batch) {
-                changed |= apply(cluster, event);
-                metrics.applied(cluster, event);
+                try {
+                    changed |= apply(cluster, event);
+                    metrics.applied(cluster, event);
+                } catch (DataAccessException e) {
+                    throw e;
+                } catch (RuntimeException e) {
+                    log.error("Skipping tenant event {} ({}) from {}: {}", event.id(), event.eventType(), cluster,
+                            e.toString());
+                    metrics.skipped(cluster, event);
+                }
                 positions.put(cluster, Checkpoint.of(event));
             }
         } while (batch.size() == BATCH);
@@ -178,12 +193,12 @@ public class TenantDirectory implements SmartLifecycle {
                 yield tenant.isPresent();
             }
             case "TENANT_DELETED" -> {
-                ActiveTenant removed = tenants.get(payload.get("name").asString());
-                if (removed != null && !removed.system()) {
-                    tenants.remove(removed.name());
-                    yield true;
+                UUID id = UUID.fromString(payload.get("tenantId").asString());
+                ActiveTenant current = tenants.get(payload.get("name").asString());
+                if (current == null || current.system() || !current.id().equals(id)) {
+                    yield false;
                 }
-                yield false;
+                yield tenants.remove(current.name(), current);
             }
             default -> false;
         };
@@ -194,6 +209,9 @@ public class TenantDirectory implements SmartLifecycle {
         if (current != null && current.system()) {
             log.error("Ignoring tenant {} because the name belongs to a system tenant", tenant.name());
             return;
+        }
+        if (current != null && !current.id().equals(tenant.id())) {
+            log.warn("Tenant {} now belongs to {} instead of {}", tenant.name(), tenant.id(), current.id());
         }
         tenants.put(tenant.name(), tenant);
     }

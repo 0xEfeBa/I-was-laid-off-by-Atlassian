@@ -36,7 +36,7 @@ class IdentityDirectoryIT {
         clusters = new ClusterDataSources(Map.of("eu", TestDatabase.connection(2)));
         directory = new IdentityDirectory(clusters, new InitialLoader(index),
                 new IdentityEventApplier(index, JsonMapper.builder().build()), Duration.ofMillis(100),
-                new OutboxMetrics(registry, "identity", Clock.systemUTC()));
+                Duration.ofHours(1), Clock.systemUTC(), new OutboxMetrics(registry, "identity", Clock.systemUTC()));
     }
 
     @AfterEach
@@ -64,7 +64,7 @@ class IdentityDirectoryIT {
         transactions.executeWithoutResult(status -> outbox.append("user", existing.toString(), "USER_BANNED",
                 "{\"id\":\"%s\",\"version\":2}".formatted(existing)));
 
-        directory.follow();
+        directory.follow("eu");
 
         assertThat(index.user(later)).isPresent();
         assertThat(index.user(existing)).hasValueSatisfying(user -> assertThat(user.banned()).isTrue());
@@ -72,10 +72,26 @@ class IdentityDirectoryIT {
     }
 
     @Test
+    void aBrokenEventIsSkippedAndTheNextOneIsApplied() {
+        directory.start();
+        UUID later = UUID.randomUUID();
+        transactions.executeWithoutResult(status -> outbox.append("user", "x", "USER_CREATED", "{\"id\":\"x\"}"));
+        transactions.executeWithoutResult(status -> outbox.append("user", later.toString(), "USER_CREATED", """
+                {"id":"%s","username":"after","role":"USER","homeRegion":"eu","banned":false,"version":1}
+                """.formatted(later)));
+
+        directory.follow("eu");
+
+        assertThat(index.user(later)).isPresent();
+        assertThat(registry.get("triedge.outbox.skipped").tags("type", "USER_CREATED").counter().count()).isEqualTo(1);
+        assertThat(directory.catchUp("eu")).isZero();
+    }
+
+    @Test
     void followingDoesNothingBeforeStart() {
         transactions.executeWithoutResult(status -> outbox.append("user", "x", "USER_BANNED", "{}"));
 
-        directory.follow();
+        directory.follow("eu");
 
         assertThat(directory.isRunning()).isFalse();
         assertThat(directory.getPhase()).isEqualTo(IdentityDirectory.PHASE);

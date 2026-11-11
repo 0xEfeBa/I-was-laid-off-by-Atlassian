@@ -22,6 +22,7 @@ public record ControlPlaneProperties(
             "prometheus", "loki", "tempo", "grafana", "envoy", "metadata.google.internal"
         }) List<String> forbiddenBackendHosts,
         @DefaultValue("PT0.1S") Duration coalesce,
+        @DefaultValue("PT0.2S") Duration pollInterval,
         @DefaultValue Map<String, String> remoteRegions,
         @DefaultValue List<String> peerCidrs,
         @Nullable String tenantSourceAddress,

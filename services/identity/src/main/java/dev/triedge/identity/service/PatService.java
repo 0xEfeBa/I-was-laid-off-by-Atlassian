@@ -3,6 +3,7 @@ package dev.triedge.identity.service;
 import dev.triedge.identity.api.ApiException;
 import dev.triedge.identity.data.PersonalAccessToken;
 import dev.triedge.identity.data.TokenRepository;
+import dev.triedge.identity.data.UserRepository;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -26,12 +27,15 @@ public class PatService {
     }
 
     private final TokenRepository tokens;
+    private final UserRepository users;
     private final IdentityEvents events;
     private final TransactionTemplate transactions;
     private final Clock clock;
 
-    public PatService(TokenRepository tokens, IdentityEvents events, TransactionTemplate transactions, Clock clock) {
+    public PatService(TokenRepository tokens, UserRepository users, IdentityEvents events,
+            TransactionTemplate transactions, Clock clock) {
         this.tokens = tokens;
+        this.users = users;
         this.events = events;
         this.transactions = transactions;
         this.clock = clock;
@@ -53,6 +57,9 @@ public class PatService {
                 UUID.randomUUID(), userId, name, SecretTokens.hash(token), List.copyOf(scopes),
                 lifetime == null ? null : now.plus(lifetime), null, null, now);
         transactions.executeWithoutResult(status -> {
+            if (!users.lockActive(userId)) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "The account is banned");
+            }
             if (tokens.activePats(userId).size() >= MAX_ACTIVE_TOKENS) {
                 throw new ApiException(HttpStatus.CONFLICT, "At most " + MAX_ACTIVE_TOKENS + " active tokens are allowed");
             }

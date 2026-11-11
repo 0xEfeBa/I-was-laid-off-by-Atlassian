@@ -23,6 +23,6 @@ datasources:
     jsonData:
       derivedFields:
         - name: trace
-          matcherRegex: '\[([0-9a-f]{32})-[0-9a-f]{16}\]'
+          matcherRegex: '(?:"traceId":"|\[)([0-9a-f]{32})'
           url: '$${__value.raw}'
           datasourceUid: tempo

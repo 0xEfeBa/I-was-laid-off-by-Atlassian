@@ -48,9 +48,9 @@ public class SidecarConfiguration {
 
     @Bean
     IdentityDirectory identityDirectory(ClusterDataSources clusters, IdentityIndex index, JsonMapper json, Clock clock,
-            MeterRegistry registry) {
+            MeterRegistry registry, SidecarProperties properties) {
         return new IdentityDirectory(clusters, new InitialLoader(index), new IdentityEventApplier(index, json),
-                Duration.ofSeconds(2), new OutboxMetrics(registry, "identity", clock));
+                Duration.ofSeconds(2), properties.pollInterval(), clock, new OutboxMetrics(registry, "identity", clock));
     }
 
     @Bean

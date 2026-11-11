@@ -62,6 +62,14 @@ public class UserRepository {
                 .findFirst();
     }
 
+    public boolean lockActive(UUID id) {
+        return home.sql("SELECT 1 FROM identity.users WHERE id = :id AND banned_at IS NULL FOR UPDATE")
+                .param("id", id)
+                .query(Integer.class)
+                .optional()
+                .isPresent();
+    }
+
     public Optional<User> ban(UUID id) {
         return home.sql("""
                 UPDATE identity.users

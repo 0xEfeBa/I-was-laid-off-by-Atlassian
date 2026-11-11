@@ -2,6 +2,7 @@ package dev.triedge.common.db;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -10,6 +11,10 @@ import javax.sql.DataSource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 public class ClusterDataSources implements AutoCloseable {
+
+    static final Duration CONNECTION_TIMEOUT = Duration.ofSeconds(5);
+    static final int CONNECT_TIMEOUT_SECONDS = 5;
+    static final int SOCKET_TIMEOUT_SECONDS = 30;
 
     private final Map<String, HikariDataSource> dataSources;
     private final Map<String, JdbcClient> clients;
@@ -62,6 +67,10 @@ public class ClusterDataSources implements AutoCloseable {
         config.setPassword(connection.password());
         config.setMaximumPoolSize(connection.maxPoolSize());
         config.setInitializationFailTimeout(-1);
+        config.setConnectionTimeout(CONNECTION_TIMEOUT.toMillis());
+        config.addDataSourceProperty("connectTimeout", CONNECT_TIMEOUT_SECONDS);
+        config.addDataSourceProperty("socketTimeout", SOCKET_TIMEOUT_SECONDS);
+        config.addDataSourceProperty("tcpKeepAlive", true);
         return new HikariDataSource(config);
     }
 }

@@ -51,7 +51,7 @@ public class ControlPlaneConfiguration {
     TenantDirectory tenantDirectory(ClusterDataSources clusters, ControlPlaneProperties properties, JsonMapper json,
             MeterRegistry registry) {
         return new TenantDirectory(clusters, SystemTenants.load(properties.systemTenantsDir()), json, Duration.ofSeconds(2),
-                Clock.systemUTC(), new OutboxMetrics(registry, "platform", Clock.systemUTC()));
+                properties.pollInterval(), Clock.systemUTC(), new OutboxMetrics(registry, "platform", Clock.systemUTC()));
     }
 
     @Bean

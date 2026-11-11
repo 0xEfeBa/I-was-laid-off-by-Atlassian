@@ -5,6 +5,8 @@ import dev.triedge.controlplane.xds.XdsServer;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;
@@ -27,11 +29,13 @@ public class ControlPlaneHealth implements HealthIndicator {
 
     @Override
     public Health health() {
-        Instant lastFollow = directory.lastFollow();
-        Health.Builder health = stuck(lastFollow) || !xds.isRunning() ? Health.down() : Health.up();
+        Map<String, Instant> rounds = directory.lastRounds();
+        List<String> stuck = directory.clusters().stream().filter(cluster -> stuck(rounds.get(cluster))).toList();
+        Health.Builder health = !stuck.isEmpty() || !xds.isRunning() ? Health.down() : Health.up();
         return health
                 .withDetail("xds", xds.isRunning() ? "running" : "stopped")
-                .withDetail("lastFollow", String.valueOf(lastFollow))
+                .withDetail("stuck", stuck)
+                .withDetail("lastRounds", rounds)
                 .withDetail("caughtUp", directory.caughtUp())
                 .build();
     }
@@ -41,7 +45,7 @@ public class ControlPlaneHealth implements HealthIndicator {
         xds.serving(Status.UP.equals(health().getStatus()));
     }
 
-    private boolean stuck(@Nullable Instant lastFollow) {
-        return lastFollow == null || lastFollow.plus(maxFollowAge).isBefore(clock.instant());
+    private boolean stuck(@Nullable Instant lastRound) {
+        return lastRound == null || lastRound.plus(maxFollowAge).isBefore(clock.instant());
     }
 }

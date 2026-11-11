@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.zaxxer.hikari.HikariDataSource;
 import dev.triedge.common.testing.TestDatabase;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -34,6 +35,32 @@ class ClusterDataSourcesIT {
             ((HikariDataSource) dataSources.dataSource("ap")).setConnectionTimeout(250);
             assertThatThrownBy(() -> dataSources.jdbc("ap").sql("SELECT 1").query(Integer.class).single())
                     .isInstanceOf(DataAccessException.class);
+        }
+    }
+
+    @Test
+    void queriesThatHangAreCutOff() {
+        ClusterConnection base = TestDatabase.connection(1);
+        String url = base.url() + (base.url().contains("?") ? "&" : "?") + "socketTimeout=1";
+        ClusterConnection impatient = new ClusterConnection(url, base.username(), base.password(), 1);
+
+        try (ClusterDataSources dataSources = new ClusterDataSources(Map.of("eu", impatient))) {
+            long started = System.nanoTime();
+            assertThatThrownBy(() -> dataSources.jdbc("eu").sql("SELECT pg_sleep(10)").query(Object.class).single())
+                    .isInstanceOf(DataAccessException.class);
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(5));
+        }
+    }
+
+    @Test
+    void everyPoolHasTimeouts() {
+        try (ClusterDataSources dataSources = new ClusterDataSources(Map.of("eu", TestDatabase.connection(1)))) {
+            HikariDataSource pool = (HikariDataSource) dataSources.dataSource("eu");
+
+            assertThat(pool.getConnectionTimeout()).isEqualTo(5_000);
+            assertThat(pool.getDataSourceProperties())
+                    .containsEntry("connectTimeout", 5)
+                    .containsEntry("socketTimeout", 30);
         }
     }
 

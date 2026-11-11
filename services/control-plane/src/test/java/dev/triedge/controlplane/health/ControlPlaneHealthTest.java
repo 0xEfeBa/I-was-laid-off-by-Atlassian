@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.health.contributor.Status;
@@ -28,12 +29,13 @@ class ControlPlaneHealthTest {
     @BeforeEach
     void healthyByDefault() {
         when(xds.isRunning()).thenReturn(true);
-        when(directory.lastFollow()).thenReturn(NOW.minusSeconds(1));
+        when(directory.clusters()).thenReturn(Set.of("eu", "us"));
+        when(directory.lastRounds()).thenReturn(Map.of("eu", NOW.minusSeconds(1), "us", NOW.minusSeconds(1)));
         when(directory.caughtUp()).thenReturn(Map.of("eu", NOW.minusSeconds(1), "us", NOW.minusSeconds(600)));
     }
 
     @Test
-    void isUpWhileTenantEventsAreFollowedEvenIfAClusterIsBehind() {
+    void isUpWhileEveryClusterFinishesRoundsEvenIfOneOfThemFails() {
         assertThat(health.health().getStatus()).isEqualTo(Status.UP);
 
         health.publish();
@@ -42,8 +44,8 @@ class ControlPlaneHealthTest {
     }
 
     @Test
-    void isDownWhenFollowingStopped() {
-        when(directory.lastFollow()).thenReturn(NOW.minusSeconds(31));
+    void isDownWhenOneClusterIsStuck() {
+        when(directory.lastRounds()).thenReturn(Map.of("eu", NOW.minusSeconds(1), "us", NOW.minusSeconds(31)));
 
         assertThat(health.health().getStatus()).isEqualTo(Status.DOWN);
 
@@ -54,10 +56,10 @@ class ControlPlaneHealthTest {
 
     @Test
     void isDownBeforeTheFirstLoadAndWithoutTheXdsServer() {
-        when(directory.lastFollow()).thenReturn(null);
+        when(directory.lastRounds()).thenReturn(Map.of());
         assertThat(health.health().getStatus()).isEqualTo(Status.DOWN);
 
-        when(directory.lastFollow()).thenReturn(NOW);
+        when(directory.lastRounds()).thenReturn(Map.of("eu", NOW, "us", NOW));
         when(xds.isRunning()).thenReturn(false);
         assertThat(health.health().getStatus()).isEqualTo(Status.DOWN);
     }

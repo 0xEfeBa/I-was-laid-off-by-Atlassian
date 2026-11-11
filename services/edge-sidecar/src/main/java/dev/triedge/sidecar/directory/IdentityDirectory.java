@@ -2,18 +2,20 @@ package dev.triedge.sidecar.directory;
 
 import dev.triedge.common.db.ClusterDataSources;
 import dev.triedge.common.outbox.Checkpoint;
+import dev.triedge.common.outbox.ClusterFollower;
 import dev.triedge.common.outbox.OutboxEvent;
 import dev.triedge.common.outbox.OutboxMetrics;
 import dev.triedge.common.outbox.OutboxTailer;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
-import org.springframework.scheduling.annotation.Scheduled;
 
 public class IdentityDirectory implements SmartLifecycle {
 
@@ -26,17 +28,22 @@ public class IdentityDirectory implements SmartLifecycle {
     private final InitialLoader loader;
     private final IdentityEventApplier applier;
     private final Duration retryDelay;
+    private final Duration pollInterval;
+    private final Clock clock;
     private final OutboxMetrics metrics;
     private final Map<String, Checkpoint> positions = new ConcurrentHashMap<>();
     private final Map<String, OutboxTailer> tailers = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean();
+    private volatile @Nullable ClusterFollower follower;
 
     public IdentityDirectory(ClusterDataSources clusters, InitialLoader loader, IdentityEventApplier applier,
-            Duration retryDelay, OutboxMetrics metrics) {
+            Duration retryDelay, Duration pollInterval, Clock clock, OutboxMetrics metrics) {
         this.clusters = clusters;
         this.loader = loader;
         this.applier = applier;
         this.retryDelay = retryDelay;
+        this.pollInterval = pollInterval;
+        this.clock = clock;
         this.metrics = metrics;
     }
 
@@ -49,11 +56,19 @@ public class IdentityDirectory implements SmartLifecycle {
         }
         running.set(true);
         log.info("Identity directory loaded from {}", clusters.clusters());
+        ClusterFollower started = new ClusterFollower("identity-events", clusters.clusters(), pollInterval, clock,
+                this::follow);
+        started.start();
+        follower = started;
     }
 
     @Override
     public void stop() {
         running.set(false);
+        ClusterFollower current = follower;
+        if (current != null) {
+            current.close();
+        }
     }
 
     @Override
@@ -66,19 +81,12 @@ public class IdentityDirectory implements SmartLifecycle {
         return PHASE;
     }
 
-    @Scheduled(fixedDelayString = "${triedge.sidecar.poll-interval:PT0.2S}")
-    public void follow() {
+    void follow(String cluster) {
         if (!running.get()) {
             return;
         }
-        for (String cluster : clusters.clusters()) {
-            try {
-                catchUp(cluster);
-                metrics.read(cluster);
-            } catch (RuntimeException e) {
-                log.warn("Could not read identity events from {}: {}", cluster, e.getMessage());
-            }
-        }
+        catchUp(cluster);
+        metrics.read(cluster);
     }
 
     int catchUp(String cluster) {
@@ -87,10 +95,16 @@ public class IdentityDirectory implements SmartLifecycle {
         do {
             batch = tailers.get(cluster).poll(positions.get(cluster));
             for (OutboxEvent event : batch) {
-                applier.apply(event);
-                metrics.applied(cluster, event);
+                try {
+                    applier.apply(event);
+                    metrics.applied(cluster, event);
+                    applied++;
+                } catch (RuntimeException e) {
+                    log.error("Skipping identity event {} ({}) from {}: {}", event.id(), event.eventType(), cluster,
+                            e.toString());
+                    metrics.skipped(cluster, event);
+                }
                 positions.put(cluster, Checkpoint.of(event));
-                applied++;
             }
         } while (batch.size() == BATCH);
         return applied;
