@@ -134,6 +134,7 @@ class IdentityApiIT {
                 .andExpect(status().isConflict());
 
         assertThat(reservations.find(second)).isEmpty();
+        mvc.perform(jsonPost("/v1/signup", signup(second))).andExpect(status().isCreated());
     }
 
     @Test
@@ -161,6 +162,13 @@ class IdentityApiIT {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.user.username").value(username))
                 .andReturn());
+
+        mvc.perform(post("/v1/token/refresh").cookie(first).header(HttpHeaders.ORIGIN, ORIGIN))
+                .andExpect(status().isOk());
+        jdbc.sql("""
+                UPDATE identity.refresh_tokens SET used_at = used_at - interval '1 minute'
+                WHERE user_id = (SELECT id FROM identity.users WHERE username = :username) AND used_at IS NOT NULL
+                """).param("username", username).update();
 
         mvc.perform(post("/v1/token/refresh").cookie(first).header(HttpHeaders.ORIGIN, ORIGIN))
                 .andExpect(status().isUnauthorized());
@@ -245,11 +253,12 @@ class IdentityApiIT {
     @Test
     void janitorReleasesAbandonedReservations() {
         String username = unique();
-        reservations.reserve(username,
+        reservations.reserve(username, username + "@example.com",
                 new UsernameReservation.Reservation("eu", UUID.randomUUID(), Instant.now().minusSeconds(3600)));
 
-        assertThat(janitor.releaseAbandoned()).isGreaterThanOrEqualTo(1);
+        assertThat(janitor.releaseAbandoned()).isGreaterThanOrEqualTo(2);
         assertThat(reservations.find(username)).isEmpty();
+        assertThat(reservations.findEmail(username + "@example.com")).isEmpty();
     }
 
     private static String unique() {

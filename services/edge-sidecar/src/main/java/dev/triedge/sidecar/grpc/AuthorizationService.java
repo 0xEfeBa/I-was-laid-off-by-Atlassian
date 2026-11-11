@@ -134,7 +134,8 @@ public class AuthorizationService extends AuthorizationGrpc.AuthorizationImplBas
                 .build();
     }
 
-    static CheckResponse denied(int status, String detail, boolean challengeBasic) {
+    static CheckResponse denied(int requested, String detail, boolean challengeBasic) {
+        int status = HookClient.supported(requested);
         String body = "{\"type\":\"about:blank\",\"status\":" + status + ",\"detail\":\""
                 + detail.replace("\\", "\\\\").replace("\"", "\\\"") + "\"}";
         DeniedHttpResponse.Builder denied = DeniedHttpResponse.newBuilder()

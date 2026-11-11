@@ -134,6 +134,11 @@ class AuthorizationServiceTest {
         assertThat(service.decide(request(rule("jwt", "hook", false), headers)).getDeniedResponse().getStatus().getCodeValue())
                 .isEqualTo(404);
 
+        hookResult.set(new HookClient.Result.Denied(451));
+        CheckResponse unsupported = service.decide(request(rule("jwt", "hook", false), headers));
+        assertThat(unsupported.getDeniedResponse().getStatus().getCodeValue()).isEqualTo(403);
+        assertThat(unsupported.getDeniedResponse().getBody()).contains("\"status\":403");
+
         hookResult.set(new HookClient.Result.Unavailable("DEADLINE_EXCEEDED"));
         assertThat(service.decide(request(rule("jwt", "hook", false), headers)).getDeniedResponse().getStatus().getCodeValue())
                 .isEqualTo(503);

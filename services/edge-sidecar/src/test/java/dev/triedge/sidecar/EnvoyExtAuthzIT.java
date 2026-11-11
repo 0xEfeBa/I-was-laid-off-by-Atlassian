@@ -125,7 +125,7 @@ class EnvoyExtAuthzIT {
                 }, Duration.ofMillis(50)),
                 new HeaderAllowlist());
         int grpcPort = freePort();
-        sidecar = new GrpcServer(grpcPort, service);
+        sidecar = new GrpcServer(grpcPort, service, 8);
         sidecar.start();
         eu = upstream("eu");
         us = upstream("us");

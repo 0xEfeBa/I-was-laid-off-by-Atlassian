@@ -6,6 +6,8 @@ import io.grpc.Server;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -18,19 +20,29 @@ public class GrpcServer implements SmartLifecycle {
 
     private final int port;
     private final BindableService service;
+    private final int threads;
     private @Nullable Server server;
+    private @Nullable ExecutorService executor;
 
-    public GrpcServer(int port, BindableService service) {
+    public GrpcServer(int port, BindableService service, int threads) {
         this.port = port;
         this.service = service;
+        this.threads = threads;
     }
 
     @Override
     public synchronized void start() {
+        executor = Executors.newFixedThreadPool(threads, Thread.ofPlatform().name("ext-authz-", 0).daemon().factory());
         try {
-            server = NettyServerBuilder.forPort(port).addService(service).build().start();
-            log.info("ext_authz gRPC server listening on port {}", server.getPort());
+            server = NettyServerBuilder.forPort(port)
+                    .addService(service)
+                    .executor(executor)
+                    .build()
+                    .start();
+            log.info("ext_authz gRPC server listening on port {} with {} threads", server.getPort(), threads);
         } catch (IOException e) {
+            executor.shutdownNow();
+            executor = null;
             throw new UncheckedIOException("Could not start the gRPC server on port " + port, e);
         }
     }
@@ -48,6 +60,10 @@ public class GrpcServer implements SmartLifecycle {
                 server.shutdownNow();
             }
             server = null;
+        }
+        if (executor != null) {
+            executor.shutdownNow();
+            executor = null;
         }
     }
 

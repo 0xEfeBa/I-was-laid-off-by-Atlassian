@@ -85,6 +85,17 @@ class HookClientTest {
     }
 
     @Test
+    void statusesEnvoyCannotSendAreMappedToTheNearestOne() {
+        for (var expected : Map.of(451, 403, 499, 403, 599, 502, 429, 429, 503, 503, 200, 403).entrySet()) {
+            next.set(denied(expected.getKey()));
+
+            assertThat(client.call("hook", CheckRequest.getDefaultInstance()))
+                    .as("hook status %d", expected.getKey())
+                    .isEqualTo(new HookClient.Result.Denied(expected.getValue()));
+        }
+    }
+
+    @Test
     void slowOrMissingHooksAreUnavailable() {
         next.set(denied(StatusCode.NotFound));
         delay.set(Duration.ofSeconds(1));
@@ -93,6 +104,13 @@ class HookClientTest {
                 .isEqualTo(new HookClient.Result.Unavailable("DEADLINE_EXCEEDED"));
         assertThat(client.call("missing", CheckRequest.getDefaultInstance()))
                 .isInstanceOf(HookClient.Result.Unavailable.class);
+    }
+
+    private static CheckResponse denied(int status) {
+        return CheckResponse.newBuilder()
+                .setStatus(Status.newBuilder().setCode(Code.PERMISSION_DENIED_VALUE))
+                .setDeniedResponse(DeniedHttpResponse.newBuilder().setStatus(HttpStatus.newBuilder().setCodeValue(status)))
+                .build();
     }
 
     private static CheckResponse denied(StatusCode status) {

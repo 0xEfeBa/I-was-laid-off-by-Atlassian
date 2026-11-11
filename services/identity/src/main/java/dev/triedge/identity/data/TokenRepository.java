@@ -94,9 +94,10 @@ public class TokenRepository {
                 .optional();
     }
 
-    public void markRefreshUsed(UUID id) {
-        jdbc.sql("UPDATE identity.refresh_tokens SET used_at = now() WHERE id = :id")
+    public void markRefreshUsed(UUID id, Instant usedAt) {
+        jdbc.sql("UPDATE identity.refresh_tokens SET used_at = :usedAt WHERE id = :id")
                 .param("id", id)
+                .param("usedAt", toOffset(usedAt))
                 .update();
     }
 

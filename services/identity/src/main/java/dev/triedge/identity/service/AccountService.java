@@ -89,19 +89,23 @@ public class AccountService {
         String home = ClusterContext.current().orElse(region);
         User user = new User(UUID.randomUUID(), username, email.toLowerCase(Locale.ROOT),
                 passwords.hash(password), "USER", home, null, 1);
-        if (!reservations.reserve(username, new UsernameReservation.Reservation(home, user.id(), clock.instant()))) {
-            throw new ApiException(HttpStatus.CONFLICT, "Username is already taken");
+        if (!reservations.reserve(username, user.email(),
+                new UsernameReservation.Reservation(home, user.id(), clock.instant()))) {
+            throw new ApiException(HttpStatus.CONFLICT, reservations.find(username).isPresent()
+                    ? "Username is already taken"
+                    : "Email address is already registered");
         }
         try {
             transactions.executeWithoutResult(status -> {
                 users.insert(user);
                 events.userCreated(user);
             });
-        } catch (DuplicateKeyException e) {
-            reservations.release(username, user.id());
-            throw new ApiException(HttpStatus.CONFLICT, "Email address is already registered");
         } catch (RuntimeException e) {
             reservations.release(username, user.id());
+            reservations.releaseEmail(user.email(), user.id());
+            if (e instanceof DuplicateKeyException) {
+                throw new ApiException(HttpStatus.CONFLICT, "Email address is already registered");
+            }
             throw e;
         }
         return user;

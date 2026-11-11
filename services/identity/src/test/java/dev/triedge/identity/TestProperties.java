@@ -39,6 +39,7 @@ public final class TestProperties {
                 List.of("http://app.test"),
                 1024,
                 1,
-                Duration.ofSeconds(2));
+                Duration.ofSeconds(2),
+                Duration.ofSeconds(10));
     }
 }

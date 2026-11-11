@@ -75,9 +75,26 @@ class RefreshTokenServiceIT {
         RefreshTokenService.IssuedToken first = service.issue(userId);
         RefreshTokenService.Rotation.Rotated second =
                 (RefreshTokenService.Rotation.Rotated) service.rotate(first.value());
+        now.set(now.get().plusSeconds(11));
 
         assertThat(service.rotate(first.value())).isEqualTo(new RefreshTokenService.Rotation.Rejected("reused"));
-        assertThat(service.rotate(second.token().value())).isEqualTo(new RefreshTokenService.Rotation.Rejected("reused"));
+        assertThat(service.rotate(second.token().value())).isEqualTo(new RefreshTokenService.Rotation.Rejected("revoked"));
+    }
+
+    @Test
+    void requestsThatArriveTogetherKeepTheSession() {
+        RefreshTokenService.IssuedToken first = service.issue(userId);
+        RefreshTokenService.Rotation.Rotated tabOne =
+                (RefreshTokenService.Rotation.Rotated) service.rotate(first.value());
+        now.set(now.get().plusSeconds(2));
+
+        RefreshTokenService.Rotation tabTwo = service.rotate(first.value());
+
+        assertThat(tabTwo).isInstanceOfSatisfying(RefreshTokenService.Rotation.Rotated.class, rotated ->
+                assertThat(rotated.token().value()).isNotEqualTo(tabOne.token().value()));
+        String other = ((RefreshTokenService.Rotation.Rotated) tabTwo).token().value();
+        assertThat(service.rotate(tabOne.token().value())).isInstanceOf(RefreshTokenService.Rotation.Rotated.class);
+        assertThat(service.rotate(other)).isInstanceOf(RefreshTokenService.Rotation.Rotated.class);
     }
 
     @Test
@@ -95,7 +112,7 @@ class RefreshTokenServiceIT {
 
         service.revoke(token.value());
 
-        assertThat(service.rotate(token.value())).isEqualTo(new RefreshTokenService.Rotation.Rejected("reused"));
+        assertThat(service.rotate(token.value())).isEqualTo(new RefreshTokenService.Rotation.Rejected("revoked"));
     }
 
     @Test

@@ -32,6 +32,7 @@ public class RefreshTokenService {
     private final TransactionTemplate transactions;
     private final Clock clock;
     private final Duration ttl;
+    private final Duration reuseGrace;
     private final String localRegion;
     private final Set<String> clusters;
 
@@ -41,6 +42,7 @@ public class RefreshTokenService {
         this.transactions = transactions;
         this.clock = clock;
         this.ttl = properties.refreshTokenTtl();
+        this.reuseGrace = properties.refreshReuseGrace();
         this.localRegion = clusterProperties.region();
         this.clusters = Set.copyOf(clusterProperties.clusters().keySet());
     }
@@ -66,14 +68,21 @@ public class RefreshTokenService {
                 return new Rotation.Rejected("unknown");
             }
             RefreshToken token = found.get();
-            if (token.revokedAt() != null || token.usedAt() != null) {
+            Instant now = clock.instant();
+            if (token.revokedAt() != null) {
+                tokens.revokeRefreshFamily(token.familyId());
+                return new Rotation.Rejected("revoked");
+            }
+            if (token.usedAt() != null && !token.usedAt().plus(reuseGrace).isAfter(now)) {
                 tokens.revokeRefreshFamily(token.familyId());
                 return new Rotation.Rejected("reused");
             }
-            if (!token.expiresAt().isAfter(clock.instant())) {
+            if (!token.expiresAt().isAfter(now)) {
                 return new Rotation.Rejected("expired");
             }
-            tokens.markRefreshUsed(token.id());
+            if (token.usedAt() == null) {
+                tokens.markRefreshUsed(token.id(), now);
+            }
             return new Rotation.Rotated(token.userId(), create(token.userId(), token.familyId()));
         });
     }

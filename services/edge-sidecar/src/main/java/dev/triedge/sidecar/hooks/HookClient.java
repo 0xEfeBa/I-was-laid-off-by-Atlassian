@@ -4,6 +4,7 @@ import io.envoyproxy.envoy.config.core.v3.HeaderValueOption;
 import io.envoyproxy.envoy.service.auth.v3.AuthorizationGrpc;
 import io.envoyproxy.envoy.service.auth.v3.CheckRequest;
 import io.envoyproxy.envoy.service.auth.v3.CheckResponse;
+import io.envoyproxy.envoy.type.v3.StatusCode;
 import io.grpc.ManagedChannel;
 import io.grpc.StatusRuntimeException;
 import java.time.Duration;
@@ -48,11 +49,17 @@ public class HookClient implements AutoCloseable {
                 }
                 return new Result.Allowed(headers);
             }
-            int status = response.getDeniedResponse().getStatus().getCodeValue();
-            return new Result.Denied(status >= 400 && status < 600 ? status : 403);
+            return new Result.Denied(supported(response.getDeniedResponse().getStatus().getCodeValue()));
         } catch (StatusRuntimeException e) {
             return new Result.Unavailable(e.getStatus().getCode().name());
         }
+    }
+
+    public static int supported(int status) {
+        if (status >= 400 && status < 600 && StatusCode.forNumber(status) != null) {
+            return status;
+        }
+        return status >= 500 && status < 600 ? 502 : 403;
     }
 
     @Override

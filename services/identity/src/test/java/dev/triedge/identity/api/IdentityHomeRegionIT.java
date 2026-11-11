@@ -12,6 +12,7 @@ import dev.triedge.common.db.HomeClusterFilter;
 import dev.triedge.common.testing.TestDatabase;
 import dev.triedge.common.testing.TestEtcd;
 import jakarta.servlet.http.Cookie;
+import java.util.Locale;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -126,6 +127,25 @@ class IdentityHomeRegionIT {
 
         assertThat(count(eu, "identity.users", id)).isEqualTo(1);
         assertThat(count(us, "identity.users", id)).isZero();
+    }
+
+    @Test
+    void anEmailCannotBeRegisteredTwiceAcrossRegions() throws Exception {
+        String first = "mail-" + UUID.randomUUID().toString().substring(0, 8);
+        String second = "mail-" + UUID.randomUUID().toString().substring(0, 8);
+        mvc.perform(post("/v1/signup").contentType(MediaType.APPLICATION_JSON)
+                        .header(HomeClusterFilter.HOME_REGION_HEADER, "us")
+                        .content(signup(first)))
+                .andExpect(status().isCreated());
+
+        mvc.perform(post("/v1/signup").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"%s\",\"email\":\"%s@EXAMPLE.com\",\"password\":\"%s\"}"
+                                .formatted(second, first.toUpperCase(Locale.ROOT), PASSWORD)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value("Email address is already registered"));
+
+        mvc.perform(post("/v1/signup").contentType(MediaType.APPLICATION_JSON).content(signup(second)))
+                .andExpect(status().isCreated());
     }
 
     private JsonNode body(ResultActions result) throws Exception {

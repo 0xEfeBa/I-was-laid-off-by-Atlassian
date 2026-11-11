@@ -90,6 +90,6 @@ public class SidecarConfiguration {
 
     @Bean
     GrpcServer grpcServer(SidecarProperties properties, AuthorizationService service) {
-        return new GrpcServer(properties.grpcPort(), service);
+        return new GrpcServer(properties.grpcPort(), service, properties.grpcThreads());
     }
 }

@@ -9,6 +9,7 @@ import com.google.protobuf.UInt32Value;
 import com.google.protobuf.Value;
 import dev.triedge.controlplane.source.ActiveTenant;
 import dev.triedge.tenant.TenantSpec;
+import io.envoyproxy.envoy.config.cluster.v3.CircuitBreakers;
 import io.envoyproxy.envoy.config.cluster.v3.Cluster;
 import io.envoyproxy.envoy.config.core.v3.Address;
 import io.envoyproxy.envoy.config.core.v3.AggregatedConfigSource;
@@ -85,6 +86,7 @@ public class ConfigRenderer {
     private static final int MAX_CLIENTS_PER_ROUTE = 10_000;
     private static final Duration DEFAULT_TIMEOUT = seconds(15);
     private static final int BUFFER_LIMIT_BYTES = 32 * 1024;
+    static final int SIDECAR_MAX_REQUESTS = 1024;
 
     private final String region;
     private final int listenerPort;
@@ -449,6 +451,9 @@ public class ConfigRenderer {
 
     private Cluster sidecarCluster() {
         return backendCluster(SIDECAR_CLUSTER, sidecarHost, sidecarPort).toBuilder()
+                .setCircuitBreakers(CircuitBreakers.newBuilder().addThresholds(CircuitBreakers.Thresholds.newBuilder()
+                        .setMaxRequests(UInt32Value.of(SIDECAR_MAX_REQUESTS))
+                        .setMaxPendingRequests(UInt32Value.of(SIDECAR_MAX_REQUESTS))))
                 .putTypedExtensionProtocolOptions("envoy.extensions.upstreams.http.v3.HttpProtocolOptions",
                         Any.pack(HttpProtocolOptions.newBuilder()
                                 .setExplicitHttpConfig(HttpProtocolOptions.ExplicitHttpConfig.newBuilder()

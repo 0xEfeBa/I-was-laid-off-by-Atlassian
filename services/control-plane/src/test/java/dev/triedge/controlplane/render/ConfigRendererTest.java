@@ -8,6 +8,7 @@ import dev.triedge.controlplane.TestTenants;
 import dev.triedge.controlplane.source.ActiveTenant;
 import dev.triedge.controlplane.validate.BootstrapJson;
 import dev.triedge.tenant.TenantSpec;
+import io.envoyproxy.envoy.config.cluster.v3.CircuitBreakers;
 import io.envoyproxy.envoy.config.cluster.v3.Cluster;
 import io.envoyproxy.envoy.config.core.v3.HttpProtocolOptions;
 import io.envoyproxy.envoy.config.route.v3.HeaderMatcher;
@@ -96,6 +97,11 @@ class ConfigRendererTest {
                 .getSocketAddress().getAddress()).isEqualTo("api.t-shop.svc");
         assertThat(resources.clusters().getFirst().getTypedExtensionProtocolOptionsMap())
                 .containsKey("envoy.extensions.upstreams.http.v3.HttpProtocolOptions");
+        CircuitBreakers.Thresholds limits =
+                resources.clusters().getFirst().getCircuitBreakers().getThresholds(0);
+        assertThat(limits.getMaxRequests().getValue()).isEqualTo(ConfigRenderer.SIDECAR_MAX_REQUESTS);
+        assertThat(limits.getMaxPendingRequests().getValue()).isEqualTo(ConfigRenderer.SIDECAR_MAX_REQUESTS);
+        assertThat(api.hasCircuitBreakers()).isFalse();
     }
 
     @Test
