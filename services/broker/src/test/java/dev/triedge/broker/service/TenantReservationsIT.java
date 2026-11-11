@@ -24,12 +24,16 @@ class TenantReservationsIT {
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();
 
-        assertThat(reservations.reserve(first, "a" + suffix, List.of(host("one"), host("two")))).isEmpty();
-        assertThat(reservations.reserve(first, null, List.of(host("one"), host("three")))).isEmpty();
+        assertThat(reservations.reserve(first, "a" + suffix, List.of(host("one"), host("two"))).createdHosts())
+                .containsExactly(host("one"), host("two"));
+        TenantReservations.Reserved again = reservations.reserve(first, null, List.of(host("one"), host("three")));
+        assertThat(again.conflicts()).isEmpty();
+        assertThat(again.createdHosts()).containsExactly(host("three"));
 
-        assertThat(reservations.reserve(second, "b" + suffix, List.of(host("two"))))
-                .containsExactly("/hosts: " + host("two") + " is already used by another tenant");
-        assertThat(reservations.reserve(second, "a" + suffix, List.of()))
+        TenantReservations.Reserved taken = reservations.reserve(second, "b" + suffix, List.of(host("two")));
+        assertThat(taken.conflicts()).containsExactly("/hosts: " + host("two") + " is already used by another tenant");
+        assertThat(taken.createdHosts()).isEmpty();
+        assertThat(reservations.reserve(second, "a" + suffix, List.of()).conflicts())
                 .containsExactly("/name: 'a" + suffix + "' is already taken");
         assertThat(reservations.names()).doesNotContainKey("b" + suffix);
         assertThat(reservations.hosts().get(host("three")).tenantId()).isEqualTo(first);
@@ -40,15 +44,16 @@ class TenantReservationsIT {
         UUID owner = UUID.randomUUID();
         UUID other = UUID.randomUUID();
         reservations.reserve(owner, "c" + suffix, List.of(host("keep"), host("drop")));
+        reservations.reserve(other, null, List.of(host("theirs")));
 
         reservations.releaseName(other, "c" + suffix);
-        assertThat(reservations.releaseHosts(other, List.of())).isZero();
-        assertThat(reservations.releaseHosts(owner, List.of(host("keep")))).isEqualTo(1);
+        assertThat(reservations.releaseHosts(other, List.of(host("keep"), host("drop")))).isZero();
+        assertThat(reservations.releaseHosts(owner, List.of(host("drop"), host("theirs"), host("never")))).isEqualTo(1);
         reservations.releaseName(owner, "c" + suffix);
 
-        assertThat(reservations.hosts()).containsKey(host("keep")).doesNotContainKey(host("drop"));
+        assertThat(reservations.hosts()).containsKeys(host("keep"), host("theirs")).doesNotContainKey(host("drop"));
         assertThat(reservations.names()).doesNotContainKey("c" + suffix);
-        assertThat(reservations.reserve(other, "c" + suffix, List.of(host("drop")))).isEmpty();
+        assertThat(reservations.reserve(other, "c" + suffix, List.of(host("drop"))).conflicts()).isEmpty();
     }
 
     private String host(String label) {

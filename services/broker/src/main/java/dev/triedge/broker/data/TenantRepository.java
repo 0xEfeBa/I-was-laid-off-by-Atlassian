@@ -118,6 +118,16 @@ public class TenantRepository {
                 .optional();
     }
 
+    public List<String> hostsOfAllVersions(UUID tenantId) {
+        return jdbc.sql("""
+                SELECT DISTINCT jsonb_array_elements_text(spec -> 'hosts') AS host
+                FROM platform.tenant_versions WHERE tenant_id = :tenant
+                """)
+                .param("tenant", tenantId)
+                .query(String.class)
+                .list();
+    }
+
     public Optional<String> specHash(UUID tenantId, int version) {
         return jdbc.sql("SELECT spec_hash FROM platform.tenant_versions WHERE tenant_id = :tenant AND version = :version")
                 .param("tenant", tenantId)

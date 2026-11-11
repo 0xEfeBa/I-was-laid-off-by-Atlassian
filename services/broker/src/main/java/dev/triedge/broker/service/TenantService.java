@@ -8,7 +8,10 @@ import dev.triedge.common.db.ClusterContext;
 import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.queue.JobQueue;
 import dev.triedge.tenant.TenantSpecParser;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import org.jspecify.annotations.Nullable;
@@ -70,10 +73,7 @@ public class TenantService {
         }
         UUID tenantId = UUID.randomUUID();
         String home = ClusterContext.current().orElse(region);
-        List<String> conflicts = reservations.reserve(tenantId, name, valid.spec().hosts());
-        if (!conflicts.isEmpty()) {
-            throw new TenantException(TenantException.Kind.CONFLICT, String.join("; ", conflicts), conflicts);
-        }
+        requireReserved(reservations.reserve(tenantId, name, valid.spec().hosts()));
         try {
             transactions.executeWithoutResult(status -> {
                 tenants.insertTenant(tenantId, name, actor.id(), home);
@@ -84,7 +84,7 @@ public class TenantService {
             });
         } catch (RuntimeException e) {
             reservations.releaseName(tenantId, name);
-            reservations.releaseHosts(tenantId, List.of());
+            reservations.releaseHosts(tenantId, valid.spec().hosts());
             if (e instanceof DuplicateKeyException) {
                 throw new TenantException(TenantException.Kind.CONFLICT, "The tenant is being created by another request");
             }
@@ -99,8 +99,7 @@ public class TenantService {
         }
         ServiceInstance instance = ownedInstance(actor, instanceId);
         TenantSpecParser.Result.Valid valid = parse(instanceId, parameters);
-        Tenant tenant = tenants.findById(instance.tenantId()).orElseThrow();
-        return submit(actor, tenant, instance, valid, "APPLY");
+        return submit(actor, instance.tenantId(), valid, null);
     }
 
     public Accepted deprovision(Actor actor, String instanceId, @Nullable String serviceId, @Nullable String planId) {
@@ -145,38 +144,54 @@ public class TenantService {
         }
         String spec = tenants.spec(tenant.id(), version)
                 .orElseThrow(() -> new TenantException(TenantException.Kind.NOT_FOUND, "Version not found"));
-        ServiceInstance instance = tenants.instanceOf(tenant.id()).orElseThrow();
         if (!(TenantSpecParser.parse(spec) instanceof TenantSpecParser.Result.Valid valid)) {
             throw new TenantException(TenantException.Kind.INVALID, "Version " + version + " can no longer be used");
         }
-        return submit(actor, tenant, instance, valid, "ROLLBACK");
+        return submit(actor, tenant.id(), valid, version);
     }
 
-    private Accepted submit(Actor actor, Tenant tenant, ServiceInstance instance, TenantSpecParser.Result.Valid valid,
-            String reason) {
-        if (instance.inProgress()) {
-            throw busy();
-        }
-        if (tenant.activeVersion() != null
-                && tenants.specHash(tenant.id(), tenant.activeVersion()).orElseThrow().equals(valid.hash())) {
-            return new Accepted("update", true);
-        }
-        List<String> conflicts = reservations.reserve(tenant.id(), null, valid.spec().hosts());
-        if (!conflicts.isEmpty()) {
-            throw new TenantException(TenantException.Kind.CONFLICT, String.join("; ", conflicts), conflicts);
-        }
-        int next = tenants.latestVersion(tenant.id()) + 1;
+    private Accepted submit(Actor actor, UUID tenantId, TenantSpecParser.Result.Valid valid,
+            @Nullable Integer rollbackTo) {
+        List<String> created = new ArrayList<>();
         try {
-            transactions.executeWithoutResult(status -> {
-                tenants.insertVersion(tenant.id(), next, valid.canonicalJson(), valid.hash(), actor.id(), reason);
-                tenants.setStatus(tenant.id(), next, "VALIDATING", null);
-                tenants.startOperation(tenant.id(), "update", valid.hash(), validating(next));
-                enqueueValidation(tenant.id(), next);
-            });
-        } catch (DuplicateKeyException e) {
-            throw busy();
+            return Objects.requireNonNull(transactions.execute(status -> {
+                Tenant tenant = tenants.lockLive(tenantId)
+                        .orElseThrow(() -> new TenantException(TenantException.Kind.NOT_FOUND, "Tenant not found"));
+                if (tenants.instanceOf(tenantId).orElseThrow().inProgress()) {
+                    throw busy();
+                }
+                if (tenant.activeVersion() != null
+                        && tenants.specHash(tenantId, tenant.activeVersion()).orElseThrow().equals(valid.hash())) {
+                    return new Accepted("update", true);
+                }
+                created.addAll(requireReserved(reservations.reserve(tenantId, null, valid.spec().hosts())));
+                int next = tenants.latestVersion(tenantId) + 1;
+                tenants.insertVersion(tenantId, next, valid.canonicalJson(), valid.hash(), actor.id(),
+                        rollbackTo == null ? "APPLY" : "ROLLBACK");
+                tenants.setStatus(tenantId, next, "VALIDATING", null);
+                tenants.startOperation(tenantId, "update", valid.hash(), rollbackTo == null
+                        ? validating(next)
+                        : "Rolling back to version " + rollbackTo + ": " + validating(next).toLowerCase(Locale.ROOT));
+                enqueueValidation(tenantId, next);
+                return new Accepted("update", false);
+            }));
+        } catch (RuntimeException e) {
+            if (!created.isEmpty()) {
+                reservations.releaseHosts(tenantId, created);
+            }
+            if (e instanceof DuplicateKeyException) {
+                throw busy();
+            }
+            throw e;
         }
-        return new Accepted("update", false);
+    }
+
+    private static List<String> requireReserved(TenantReservations.Reserved reserved) {
+        if (!reserved.conflicts().isEmpty()) {
+            throw new TenantException(TenantException.Kind.CONFLICT, String.join("; ", reserved.conflicts()),
+                    reserved.conflicts());
+        }
+        return reserved.createdHosts();
     }
 
     private Accepted repeatProvision(Actor actor, ServiceInstance instance, TenantSpecParser.Result.Valid valid) {

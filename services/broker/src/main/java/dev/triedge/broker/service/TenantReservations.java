@@ -33,6 +33,9 @@ public class TenantReservations {
         }
     }
 
+    public record Reserved(List<String> conflicts, List<String> createdHosts) {
+    }
+
     private final EtcdClient etcd;
     private final Clock clock;
     private final String region;
@@ -43,7 +46,7 @@ public class TenantReservations {
         this.region = clusters.region();
     }
 
-    public List<String> reserve(UUID tenantId, @Nullable String name, Collection<String> hosts) {
+    public Reserved reserve(UUID tenantId, @Nullable String name, Collection<String> hosts) {
         String value = new Holder(tenantId, ClusterContext.current().orElse(region), clock.instant()).encode();
         Map<String, String> create = new LinkedHashMap<>();
         Map<String, String> unchanged = new LinkedHashMap<>();
@@ -57,23 +60,26 @@ public class TenantReservations {
                     .ifPresent(taken -> conflicts.add("/hosts: " + host + " is already used by another tenant"));
         }
         if (!conflicts.isEmpty()) {
-            return conflicts;
+            return new Reserved(conflicts, List.of());
         }
         if (!etcd.putAllIfUnchanged(create, unchanged)) {
-            return List.of("Another change claimed the same name or host at the same time, try again");
+            return new Reserved(List.of("Another change claimed the same name or host at the same time, try again"),
+                    List.of());
         }
-        return List.of();
+        return new Reserved(List.of(), create.keySet().stream()
+                .filter(key -> key.startsWith(HOSTS))
+                .map(key -> key.substring(HOSTS.length()))
+                .toList());
     }
 
     public void releaseName(UUID tenantId, String name) {
         release(NAMES + name, tenantId);
     }
 
-    public int releaseHosts(UUID tenantId, Collection<String> keep) {
+    public int releaseHosts(UUID tenantId, Collection<String> hosts) {
         int released = 0;
-        for (var entry : hosts().entrySet()) {
-            if (entry.getValue().tenantId().equals(tenantId) && !keep.contains(entry.getKey())
-                    && release(HOSTS + entry.getKey(), tenantId)) {
+        for (String host : hosts) {
+            if (release(HOSTS + host, tenantId)) {
                 released++;
             }
         }

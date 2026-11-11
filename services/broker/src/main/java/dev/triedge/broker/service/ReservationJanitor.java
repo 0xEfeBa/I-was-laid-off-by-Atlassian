@@ -59,22 +59,29 @@ public class ReservationJanitor {
     private int sweep(String prefix, Map<String, TenantReservations.Holder> held, Instant cutoff, boolean hosts) {
         int released = 0;
         for (var entry : held.entrySet()) {
-            TenantReservations.Holder holder = entry.getValue();
-            if (!holder.createdAt().isBefore(cutoff) || !leaders.leads(holder.region(), region)) {
-                continue;
-            }
-            Optional<TenantRepository.Holding> holding =
-                    ClusterContext.call(holder.region(), () -> tenants.holding(holder.tenantId()));
-            boolean abandoned = holding.isEmpty() || !holding.get().live()
-                    || (hosts && !holding.get().busy() && !activeHosts(holding.get()).contains(entry.getKey()));
-            String key = prefix + entry.getKey();
-            if (abandoned && etcd.get(key)
-                    .filter(value -> TenantReservations.Holder.decode(value).tenantId().equals(holder.tenantId()))
-                    .map(value -> etcd.deleteIfValue(key, value)).orElse(false)) {
-                released++;
+            try {
+                if (releaseIfAbandoned(prefix + entry.getKey(), entry.getKey(), entry.getValue(), cutoff, hosts)) {
+                    released++;
+                }
+            } catch (RuntimeException e) {
+                log.warn("Could not check reservation {}{}: {}", prefix, entry.getKey(), e.getMessage());
             }
         }
         return released;
+    }
+
+    private boolean releaseIfAbandoned(String key, String reserved, TenantReservations.Holder holder, Instant cutoff,
+            boolean hosts) {
+        if (!holder.createdAt().isBefore(cutoff) || !leaders.leads(holder.region(), region)) {
+            return false;
+        }
+        Optional<TenantRepository.Holding> holding =
+                ClusterContext.call(holder.region(), () -> tenants.holding(holder.tenantId()));
+        boolean abandoned = holding.isEmpty() || !holding.get().live()
+                || (hosts && !holding.get().busy() && !activeHosts(holding.get()).contains(reserved));
+        return abandoned && etcd.get(key)
+                .filter(value -> TenantReservations.Holder.decode(value).tenantId().equals(holder.tenantId()))
+                .map(value -> etcd.deleteIfValue(key, value)).orElse(false);
     }
 
     private List<String> activeHosts(TenantRepository.Holding holding) {

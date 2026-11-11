@@ -2,6 +2,9 @@ package dev.triedge.broker.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -11,6 +14,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import dev.triedge.broker.data.TenantRepository;
 import dev.triedge.broker.service.ControlPlaneClient;
 import dev.triedge.broker.service.ReservationJanitor;
 import dev.triedge.broker.service.TenantReservations;
@@ -21,6 +25,8 @@ import dev.triedge.common.testing.TestDatabase;
 import dev.triedge.common.testing.TestEtcd;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +38,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -56,6 +63,9 @@ class BrokerApiIT {
 
     @MockitoBean
     private ControlPlaneClient controlPlane;
+
+    @MockitoSpyBean
+    private TenantRepository repository;
 
     private final JdbcClient jdbc = JdbcClient.create(TestDatabase.dataSource());
     private final UUID owner = UUID.randomUUID();
@@ -151,6 +161,8 @@ class BrokerApiIT {
                 .andExpect(status().isBadRequest());
         mvc.perform(as(post("/api/tenants/" + name + "/rollback"), owner).content("{\"version\":1}"))
                 .andExpect(status().isAccepted());
+        lastOperation(name, owner)
+                .andExpect(jsonPath("$.description").value("Rolling back to version 1: validating version 3"));
         worker.drain();
         mvc.perform(as(get("/api/tenants/" + name + "/versions/3"), owner))
                 .andExpect(jsonPath("$.reason").value("ROLLBACK"))
@@ -175,6 +187,61 @@ class BrokerApiIT {
         assertThat(etcd.get(TenantReservations.HOSTS + first)).isEmpty();
         mvc.perform(async(put(INSTANCES + name), stranger).content(provision(name, first)))
                 .andExpect(status().isAccepted());
+    }
+
+    @Test
+    void concurrentUpdatesOfOneTenantAreSerialized() throws Exception {
+        String name = "race-" + suffix;
+        mvc.perform(async(put(INSTANCES + name), owner).content(provision(name, name + ".test")))
+                .andExpect(status().isAccepted());
+        worker.drain();
+
+        List<String> hosts = List.of("a." + name + ".test", "b." + name + ".test");
+        CountDownLatch start = new CountDownLatch(1);
+        List<CompletableFuture<Integer>> answers = hosts.stream().map(host -> CompletableFuture.supplyAsync(() -> {
+            try {
+                start.await();
+                return mvc.perform(async(patch(INSTANCES + name), owner).content(update(name, host)))
+                        .andReturn().getResponse().getStatus();
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        })).toList();
+        start.countDown();
+        List<Integer> statuses = answers.stream().map(CompletableFuture::join).toList();
+
+        assertThat(statuses).containsExactlyInAnyOrder(202, 422);
+        String winner = hosts.get(statuses.indexOf(202));
+        String loser = hosts.get(statuses.indexOf(422));
+        assertThat(etcd.get(TenantReservations.HOSTS + winner)).isPresent();
+        assertThat(etcd.get(TenantReservations.HOSTS + loser)).isEmpty();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.tenant_versions v JOIN platform.tenants t ON t.id = v.tenant_id
+                WHERE t.name = :name
+                """).param("name", name).query(Integer.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    void aFailedUpdateReleasesOnlyTheHostsItReserved() throws Exception {
+        String name = "undo-" + suffix;
+        String kept = name + ".test";
+        String added = "api." + name + ".test";
+        mvc.perform(async(put(INSTANCES + name), owner).content(provision(name, kept)))
+                .andExpect(status().isAccepted());
+        worker.drain();
+
+        doThrow(new IllegalStateException("database lost")).when(repository)
+                .setStatus(any(), anyInt(), eq("VALIDATING"), any());
+        mvc.perform(async(patch(INSTANCES + name), owner).content("""
+                        {"service_id":"tri-edge-tenant","parameters":{"apiVersion":"tri-edge/v1","name":"%s",
+                         "hosts":["%s","%s"],"backends":[{"name":"main","address":"main.%s.svc:80"}],
+                         "routes":[{"path":"/","backend":"main"}]}}
+                        """.formatted(name, kept, added, name)))
+                .andExpect(status().isInternalServerError());
+
+        assertThat(etcd.get(TenantReservations.HOSTS + kept)).isPresent();
+        assertThat(etcd.get(TenantReservations.HOSTS + added)).isEmpty();
+        lastOperation(name, owner).andExpect(jsonPath("$.description").value("Version 1 is active"));
     }
 
     @Test

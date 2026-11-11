@@ -10,9 +10,11 @@ import dev.triedge.common.queue.Job;
 import dev.triedge.common.queue.JobQueue;
 import dev.triedge.common.region.LeaderResolver;
 import dev.triedge.tenant.TenantSpecParser;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
@@ -192,7 +194,7 @@ public class TenantWorker {
         });
         if (tenant != null && tenant.isPresent()) {
             log.info("Tenant {} version {} activated", tenant.get().name(), version);
-            releaseUnusedHosts(tenantId, version);
+            releaseUnusedHosts(tenantId);
         }
     }
 
@@ -219,12 +221,7 @@ public class TenantWorker {
     }
 
     private void releaseAfterRejection(Tenant tenant) {
-        Integer active = tenant.activeVersion();
-        if (active == null) {
-            releaseHosts(tenant.id(), List.of());
-        } else {
-            releaseUnusedHosts(tenant.id(), active);
-        }
+        releaseUnusedHosts(tenant.id());
     }
 
     private void deprovision(Job job) {
@@ -246,7 +243,11 @@ public class TenantWorker {
             } catch (RuntimeException e) {
                 log.warn("Could not release the name of tenant {}: {}", tenant.get().name(), e.getMessage());
             }
-            releaseHosts(tenantId, List.of());
+            try {
+                reservations.releaseHosts(tenantId, tenants.hostsOfAllVersions(tenantId));
+            } catch (RuntimeException e) {
+                log.warn("Could not release the hosts of tenant {}: {}", tenant.get().name(), e.getMessage());
+            }
         }
     }
 
@@ -256,18 +257,23 @@ public class TenantWorker {
         }
     }
 
-    private void releaseUnusedHosts(UUID tenantId, int version) {
-        String spec = tenants.spec(tenantId, version).orElseThrow();
-        if (TenantSpecParser.parse(spec) instanceof TenantSpecParser.Result.Valid valid) {
-            releaseHosts(tenantId, valid.spec().hosts());
-        }
-    }
-
-    private void releaseHosts(UUID tenantId, List<String> keep) {
+    private void releaseUnusedHosts(UUID tenantId) {
         try {
-            reservations.releaseHosts(tenantId, keep);
+            transactions.executeWithoutResult(status -> {
+                Optional<Tenant> live = tenants.lockLive(tenantId);
+                if (live.isEmpty() || tenants.instanceOf(tenantId).map(ServiceInstance::inProgress).orElse(false)) {
+                    return;
+                }
+                Set<String> unused = new LinkedHashSet<>(tenants.hostsOfAllVersions(tenantId));
+                Integer active = live.get().activeVersion();
+                if (active != null && TenantSpecParser.parse(tenants.spec(tenantId, active).orElseThrow())
+                        instanceof TenantSpecParser.Result.Valid valid) {
+                    unused.removeAll(valid.spec().hosts());
+                }
+                reservations.releaseHosts(tenantId, unused);
+            });
         } catch (RuntimeException e) {
-            log.warn("Could not release hosts of tenant {}: {}", tenantId, e.getMessage());
+            log.warn("Could not release unused hosts of tenant {}: {}", tenantId, e.getMessage());
         }
     }
 }
