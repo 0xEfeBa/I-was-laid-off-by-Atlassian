@@ -1,7 +1,7 @@
 package dev.triedge.broker.service;
 
-import dev.triedge.broker.data.ServiceInstance;
 import dev.triedge.broker.data.Tenant;
+import dev.triedge.broker.data.TenantOverview;
 import dev.triedge.broker.data.TenantRepository;
 import dev.triedge.broker.data.TenantVersion;
 import dev.triedge.common.etcd.EtcdClient;
@@ -44,20 +44,19 @@ public class TenantQueries {
     }
 
     public List<Summary> list(Actor actor) {
-        List<Tenant> visible = actor.admin() ? tenants.allLive() : tenants.liveOwnedBy(actor.id());
-        return visible.stream().map(this::summary).toList();
+        return tenants.overviews(actor.admin() ? null : actor.id()).stream().map(TenantQueries::summary).toList();
     }
 
     public Detail detail(Actor actor, String name) {
         Tenant tenant = visible(actor, name);
-        return new Detail(summary(tenant), applied(name), tenants.versions(tenant.id()));
+        Summary summary = tenants.overview(tenant.id()).map(TenantQueries::summary)
+                .orElseThrow(() -> new TenantException(TenantException.Kind.NOT_FOUND, "Tenant not found"));
+        return new Detail(summary, applied(name), tenants.versions(tenant.id()));
     }
 
     public VersionSpec version(Actor actor, String name, int version) {
         Tenant tenant = visible(actor, name);
-        TenantVersion row = tenants.versions(tenant.id()).stream()
-                .filter(v -> v.version() == version)
-                .findFirst()
+        TenantVersion row = tenants.version(tenant.id(), version)
                 .orElseThrow(() -> new TenantException(TenantException.Kind.NOT_FOUND, "Version not found"));
         return new VersionSpec(row.version(), row.reason(), row.state(), row.detail(), row.createdAt(),
                 json.readTree(tenants.spec(tenant.id(), version).orElseThrow()));
@@ -84,11 +83,8 @@ public class TenantQueries {
                 .orElseThrow(() -> new TenantException(TenantException.Kind.NOT_FOUND, "Tenant not found"));
     }
 
-    private Summary summary(Tenant tenant) {
-        ServiceInstance instance = tenants.instanceOf(tenant.id()).orElse(null);
-        return new Summary(tenant.name(), tenant.homeRegion(), tenant.activeVersion(), tenants.latestVersion(tenant.id()),
-                instance == null ? null : instance.operation(),
-                instance == null ? null : instance.operationState(),
-                instance == null ? null : instance.operationDescription());
+    private static Summary summary(TenantOverview overview) {
+        return new Summary(overview.name(), overview.homeRegion(), overview.activeVersion(), overview.latestVersion(),
+                overview.operation(), overview.operationState(), overview.operationDescription());
     }
 }

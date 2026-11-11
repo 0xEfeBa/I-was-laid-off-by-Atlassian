@@ -4,8 +4,10 @@ import dev.triedge.broker.service.Actor;
 import dev.triedge.broker.service.TenantException;
 import dev.triedge.broker.service.TenantQueries;
 import dev.triedge.broker.service.TenantService;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -24,6 +26,8 @@ public class TenantController {
 
     public record RollbackRequest(int version) {
     }
+
+    static final Duration RETRY_AFTER = Duration.ofSeconds(5);
 
     private final TenantQueries queries;
     private final TenantService service;
@@ -58,11 +62,14 @@ public class TenantController {
     public ResponseEntity<Map<String, Object>> rollback(@PathVariable String name, @RequestBody RollbackRequest request,
             Caller caller) {
         TenantService.Accepted accepted = service.rollback(actor(caller), name, request.version());
+        if (accepted.done()) {
+            return ResponseEntity.ok(Map.of());
+        }
         return ResponseEntity.accepted().body(Map.of("operation", accepted.operation()));
     }
 
     @ExceptionHandler(TenantException.class)
-    public ProblemDetail tenantError(TenantException e) {
+    public ResponseEntity<ProblemDetail> tenantError(TenantException e) {
         HttpStatus status = switch (e.kind()) {
             case INVALID -> HttpStatus.BAD_REQUEST;
             case CONFLICT -> HttpStatus.CONFLICT;
@@ -74,7 +81,11 @@ public class TenantController {
         if (!e.errors().isEmpty()) {
             problem.setProperty("errors", e.errors());
         }
-        return problem;
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(status);
+        if (e.kind() == TenantException.Kind.BUSY) {
+            response.header(HttpHeaders.RETRY_AFTER, Long.toString(RETRY_AFTER.toSeconds()));
+        }
+        return response.body(problem);
     }
 
     private static Actor actor(Caller caller) {

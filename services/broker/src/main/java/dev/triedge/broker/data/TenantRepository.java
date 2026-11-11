@@ -22,6 +22,18 @@ public class TenantRepository {
             instance_id, tenant_id, service_id, plan_id, parameters_hash,
             operation, operation_state, operation_description, updated_at""";
 
+    private static final String VERSION_QUERY = """
+            SELECT v.version, v.spec_hash, v.reason, v.created_at, s.state, s.detail
+            FROM platform.tenant_versions v
+            LEFT JOIN platform.tenant_version_status s USING (tenant_id, version)""";
+    private static final String OVERVIEW_QUERY = """
+            SELECT t.name, t.home_region, t.active_version,
+                   coalesce((SELECT max(v.version) FROM platform.tenant_versions v WHERE v.tenant_id = t.id), 0)
+                       AS latest_version,
+                   si.operation, si.operation_state, si.operation_description
+            FROM platform.tenants t
+            LEFT JOIN platform.service_instances si ON si.tenant_id = t.id""";
+
     private final JdbcClient jdbc;
 
     public TenantRepository(JdbcClient jdbc) {
@@ -35,8 +47,8 @@ public class TenantRepository {
                 .optional();
     }
 
-    public Optional<Tenant> findById(UUID id) {
-        return jdbc.sql("SELECT " + TENANT_COLUMNS + " FROM platform.tenants WHERE id = :id")
+    public Optional<Tenant> findLiveById(UUID id) {
+        return jdbc.sql("SELECT " + TENANT_COLUMNS + " FROM platform.tenants WHERE id = :id AND deleted_at IS NULL")
                 .param("id", id)
                 .query(TenantRepository::tenant)
                 .optional();
@@ -48,20 +60,6 @@ public class TenantRepository {
                 .param("id", id)
                 .query(TenantRepository::tenant)
                 .optional();
-    }
-
-    public List<Tenant> liveOwnedBy(UUID ownerId) {
-        return jdbc.sql("SELECT " + TENANT_COLUMNS
-                        + " FROM platform.tenants WHERE owner_id = :owner AND deleted_at IS NULL ORDER BY name")
-                .param("owner", ownerId)
-                .query(TenantRepository::tenant)
-                .list();
-    }
-
-    public List<Tenant> allLive() {
-        return jdbc.sql("SELECT " + TENANT_COLUMNS + " FROM platform.tenants WHERE deleted_at IS NULL ORDER BY name")
-                .query(TenantRepository::tenant)
-                .list();
     }
 
     public int countLiveOwnedBy(UUID ownerId) {
@@ -137,22 +135,35 @@ public class TenantRepository {
     }
 
     public List<TenantVersion> versions(UUID tenantId) {
-        return jdbc.sql("""
-                SELECT v.version, v.spec_hash, v.reason, v.created_at, s.state, s.detail
-                FROM platform.tenant_versions v
-                LEFT JOIN platform.tenant_version_status s USING (tenant_id, version)
-                WHERE v.tenant_id = :tenant
-                ORDER BY v.version DESC
-                """)
+        return jdbc.sql(VERSION_QUERY + " WHERE v.tenant_id = :tenant ORDER BY v.version DESC")
                 .param("tenant", tenantId)
-                .query((row, n) -> new TenantVersion(
-                        row.getInt("version"),
-                        row.getString("spec_hash"),
-                        row.getString("reason"),
-                        row.getString("state"),
-                        row.getString("detail"),
-                        instant(row, "created_at")))
+                .query(TenantRepository::version)
                 .list();
+    }
+
+    public Optional<TenantVersion> version(UUID tenantId, int version) {
+        return jdbc.sql(VERSION_QUERY + " WHERE v.tenant_id = :tenant AND v.version = :version")
+                .param("tenant", tenantId)
+                .param("version", version)
+                .query(TenantRepository::version)
+                .optional();
+    }
+
+    public List<TenantOverview> overviews(@Nullable UUID ownerId) {
+        String filter = ownerId == null ? "" : " AND t.owner_id = :owner";
+        JdbcClient.StatementSpec query = jdbc.sql(OVERVIEW_QUERY + " WHERE t.deleted_at IS NULL" + filter
+                + " ORDER BY t.name");
+        if (ownerId != null) {
+            query = query.param("owner", ownerId);
+        }
+        return query.query(TenantRepository::overview).list();
+    }
+
+    public Optional<TenantOverview> overview(UUID tenantId) {
+        return jdbc.sql(OVERVIEW_QUERY + " WHERE t.id = :tenant AND t.deleted_at IS NULL")
+                .param("tenant", tenantId)
+                .query(TenantRepository::overview)
+                .optional();
     }
 
     public void setStatus(UUID tenantId, int version, String state, @Nullable String detail) {
@@ -270,6 +281,27 @@ public class TenantRepository {
                 row.getString("home_region"),
                 row.getObject("active_version", Integer.class),
                 deletedAt == null ? null : deletedAt.toInstant());
+    }
+
+    private static TenantVersion version(ResultSet row, int rowNumber) throws SQLException {
+        return new TenantVersion(
+                row.getInt("version"),
+                row.getString("spec_hash"),
+                row.getString("reason"),
+                row.getString("state"),
+                row.getString("detail"),
+                instant(row, "created_at"));
+    }
+
+    private static TenantOverview overview(ResultSet row, int rowNumber) throws SQLException {
+        return new TenantOverview(
+                row.getString("name"),
+                row.getString("home_region"),
+                row.getObject("active_version", Integer.class),
+                row.getInt("latest_version"),
+                row.getString("operation"),
+                row.getString("operation_state"),
+                row.getString("operation_description"));
     }
 
     private static ServiceInstance instance(ResultSet row, int rowNumber) throws SQLException {

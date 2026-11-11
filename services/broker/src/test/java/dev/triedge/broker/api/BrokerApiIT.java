@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -33,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -114,8 +116,9 @@ class BrokerApiIT {
                 .andExpect(jsonPath("$.error").value("AsyncRequired"));
         mvc.perform(async(put(INSTANCES + name), owner).content(provision(name, first)))
                 .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.operation").value("provision"));
+                .andExpect(jsonPath("$.operation").value("provision:1"));
         lastOperation(name, owner).andExpect(jsonPath("$.state").value("in progress"));
+        mvc.perform(as(get(INSTANCES + name), owner)).andExpect(status().isNotFound());
         mvc.perform(async(put(INSTANCES + name), owner).content(provision(name, first)))
                 .andExpect(status().isAccepted());
 
@@ -135,7 +138,10 @@ class BrokerApiIT {
 
         mvc.perform(async(patch(INSTANCES + name), owner).content(update(name, second)))
                 .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.operation").value("update"));
+                .andExpect(jsonPath("$.operation").value("update:2"));
+        mvc.perform(as(get(INSTANCES + name), owner))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.error").value("ConcurrencyError"));
         mvc.perform(async(patch(INSTANCES + name), owner).content(update(name, first)))
                 .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.error").value("ConcurrencyError"));
@@ -160,10 +166,20 @@ class BrokerApiIT {
         mvc.perform(as(post("/api/tenants/" + name + "/rollback"), owner).content("{\"version\":2}"))
                 .andExpect(status().isBadRequest());
         mvc.perform(as(post("/api/tenants/" + name + "/rollback"), owner).content("{\"version\":1}"))
-                .andExpect(status().isAccepted());
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.operation").value("update:3"));
         lastOperation(name, owner)
                 .andExpect(jsonPath("$.description").value("Rolling back to version 1: validating version 3"));
+        mvc.perform(as(post("/api/tenants/" + name + "/rollback"), owner).content("{\"version\":1}"))
+                .andExpect(status().isConflict())
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "5"));
         worker.drain();
+        mvc.perform(as(post("/api/tenants/" + name + "/rollback"), owner).content("{\"version\":1}"))
+                .andExpect(status().isOk());
+        mvc.perform(as(get("/api/tenants/" + name + "/versions/4"), owner)).andExpect(status().isNotFound());
+        lastOperation(name, owner, "update:2")
+                .andExpect(jsonPath("$.state").value("succeeded"))
+                .andExpect(jsonPath("$.description").value("Version 2 was active and has been replaced"));
         mvc.perform(as(get("/api/tenants/" + name + "/versions/3"), owner))
                 .andExpect(jsonPath("$.reason").value("ROLLBACK"))
                 .andExpect(jsonPath("$.state").value("ACTIVE"))
@@ -265,6 +281,13 @@ class BrokerApiIT {
                 .andExpect(status().isAccepted());
         worker.drain();
         lastOperation(name, owner).andExpect(jsonPath("$.state").value("in progress"));
+        lastOperation(name, owner, "provision:1")
+                .andExpect(jsonPath("$.state").value("failed"))
+                .andExpect(jsonPath("$.description").value("Version 1 was rejected: /hosts: bad"));
+        lastOperation(name, owner, "update:2").andExpect(jsonPath("$.state").value("in progress"));
+        for (String unknown : List.of("update:x", "update:1", "provision:2", "update:9", "rollback:2")) {
+            lastOperation(name, owner, unknown).andExpect(status().isBadRequest());
+        }
 
         jdbc.sql("""
                 UPDATE platform.job_queue SET attempts = max_attempts - 1, run_after = now()
@@ -355,7 +378,12 @@ class BrokerApiIT {
 
         mvc.perform(put(INSTANCES + name + "?accepts_incomplete=true").contentType(MediaType.APPLICATION_JSON)
                         .header(OsbController.API_VERSION_HEADER, "2.17").content(provision(name, name + ".test")))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.description").value("Authentication required"))
+                .andExpect(jsonPath("$.type").doesNotExist());
+        mvc.perform(get("/api/tenants"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.detail").value("Authentication required"));
         mvc.perform(async(put(INSTANCES + "other-" + suffix), owner).content(provision(name, name + ".test")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.description").value(Matchers.containsString("instance id")));
@@ -404,6 +432,26 @@ class BrokerApiIT {
     }
 
     @Test
+    void usersListTheirOwnTenantsAndAdminsListAll() throws Exception {
+        String mine = "mine-" + suffix;
+        String theirs = "theirs-" + suffix;
+        mvc.perform(async(put(INSTANCES + mine), owner).content(provision(mine, mine + ".test")))
+                .andExpect(status().isAccepted());
+        mvc.perform(async(put(INSTANCES + theirs), stranger).content(provision(theirs, theirs + ".test")))
+                .andExpect(status().isAccepted());
+        worker.drain();
+        worker.drain();
+
+        mvc.perform(as(get("/api/tenants"), owner))
+                .andExpect(jsonPath("$[*].name").value(Matchers.contains(mine)))
+                .andExpect(jsonPath("$[0].activeVersion").value(1))
+                .andExpect(jsonPath("$[0].latestVersion").value(1))
+                .andExpect(jsonPath("$[0].operationState").value("succeeded"));
+        mvc.perform(as(get("/api/tenants"), UUID.randomUUID(), "ADMIN"))
+                .andExpect(jsonPath("$[*].name").value(Matchers.hasItems(mine, theirs)));
+    }
+
+    @Test
     void janitorReleasesReservationsOfMissingTenants() {
         String abandoned = UUID.randomUUID() + "|eu|0";
         String foreign = UUID.randomUUID() + "|us|0";
@@ -420,6 +468,10 @@ class BrokerApiIT {
 
     private ResultActions lastOperation(String name, UUID caller) throws Exception {
         return mvc.perform(as(get(INSTANCES + name + "/last_operation"), caller));
+    }
+
+    private ResultActions lastOperation(String name, UUID caller, String operation) throws Exception {
+        return mvc.perform(as(get(INSTANCES + name + "/last_operation"), caller).queryParam("operation", operation));
     }
 
     private String job(long id, String column) {

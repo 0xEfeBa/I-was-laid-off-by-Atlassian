@@ -4,6 +4,7 @@ import dev.triedge.broker.config.BrokerProperties;
 import dev.triedge.broker.data.ServiceInstance;
 import dev.triedge.broker.data.Tenant;
 import dev.triedge.broker.data.TenantRepository;
+import dev.triedge.broker.data.TenantVersion;
 import dev.triedge.common.db.ClusterContext;
 import dev.triedge.common.db.ClusterProperties;
 import dev.triedge.common.queue.JobQueue;
@@ -14,6 +15,8 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -29,7 +32,15 @@ public class TenantService {
     public static final String VALIDATE_QUEUE = "tenant-validate";
     public static final String DEPROVISION_QUEUE = "tenant-deprovision";
 
+    private static final String PROVISION = "provision";
+    private static final String UPDATE = "update";
+    private static final String DEPROVISION = "deprovision";
+    private static final Pattern OPERATION = Pattern.compile("(provision|update):([1-9][0-9]{0,8})");
+
     public record Accepted(String operation, boolean done) {
+    }
+
+    public record Operation(String state, @Nullable String description) {
     }
 
     public record Instance(ServiceInstance instance, Tenant tenant, JsonNode parameters) {
@@ -90,7 +101,7 @@ public class TenantService {
             }
             throw e;
         }
-        return new Accepted("provision", false);
+        return new Accepted(PROVISION + ":1", false);
     }
 
     public Accepted update(Actor actor, String instanceId, @Nullable String serviceId, @Nullable JsonNode parameters) {
@@ -113,26 +124,53 @@ public class TenantService {
             throw busy();
         }
         transactions.executeWithoutResult(status -> {
-            tenants.startOperation(instance.tenantId(), "deprovision", instance.parametersHash(), "Removing the tenant");
+            tenants.startOperation(instance.tenantId(), DEPROVISION, instance.parametersHash(), "Removing the tenant");
             jobs.enqueue(DEPROVISION_QUEUE, "deprovision:" + instance.tenantId(),
                     "{\"tenantId\":\"" + instance.tenantId() + "\"}");
         });
-        return new Accepted("deprovision", false);
+        return new Accepted(DEPROVISION, false);
     }
 
-    public ServiceInstance lastOperation(Actor actor, String instanceId) {
+    public Operation lastOperation(Actor actor, String instanceId, @Nullable String operation) {
         Optional<ServiceInstance> found = tenants.findInstance(instanceId);
         if (found.isEmpty()) {
             throw new TenantException(TenantException.Kind.GONE, "The instance does not exist");
         }
-        return visible(actor, found.get());
+        ServiceInstance instance = visible(actor, found.get());
+        Operation current = new Operation(instance.operationState(), instance.operationDescription());
+        if (operation == null || operation.equals(DEPROVISION)) {
+            return current;
+        }
+        Matcher matcher = OPERATION.matcher(operation);
+        if (!matcher.matches() || (matcher.group(1).equals(PROVISION) != matcher.group(2).equals("1"))) {
+            throw new TenantException(TenantException.Kind.INVALID, "Unknown operation '" + operation + "'");
+        }
+        int version = Integer.parseInt(matcher.group(2));
+        if (matcher.group(1).equals(instance.operation()) && version == tenants.latestVersion(instance.tenantId())) {
+            return current;
+        }
+        TenantVersion row = tenants.version(instance.tenantId(), version)
+                .orElseThrow(() -> new TenantException(TenantException.Kind.INVALID, "Unknown operation '" + operation + "'"));
+        return switch (String.valueOf(row.state())) {
+            case "VALIDATING" -> new Operation(ServiceInstance.IN_PROGRESS, validating(version));
+            case "ACTIVE" -> new Operation(ServiceInstance.SUCCEEDED, "Version " + version + " is active");
+            case "SUPERSEDED" -> new Operation(ServiceInstance.SUCCEEDED,
+                    "Version " + version + " was active and has been replaced");
+            default -> new Operation(ServiceInstance.FAILED,
+                    "Version " + version + " was rejected: " + String.valueOf(row.detail()).replace("\n", "; "));
+        };
     }
 
     public Instance fetch(Actor actor, String instanceId) {
         ServiceInstance instance = ownedInstance(actor, instanceId);
-        Tenant tenant = tenants.findById(instance.tenantId()).orElseThrow();
-        int version = tenant.activeVersion() != null ? tenant.activeVersion() : tenants.latestVersion(tenant.id());
-        String spec = tenants.spec(tenant.id(), version).orElseThrow();
+        Tenant tenant = live(instance.tenantId());
+        if (tenant.activeVersion() == null) {
+            throw new TenantException(TenantException.Kind.NOT_FOUND, "The instance is not ready yet");
+        }
+        if (instance.inProgress() && UPDATE.equals(instance.operation())) {
+            throw new TenantException(TenantException.Kind.BUSY, "The instance is being updated");
+        }
+        String spec = tenants.spec(tenant.id(), tenant.activeVersion()).orElseThrow();
         return new Instance(instance, tenant, json.readTree(spec));
     }
 
@@ -162,18 +200,18 @@ public class TenantService {
                 }
                 if (tenant.activeVersion() != null
                         && tenants.specHash(tenantId, tenant.activeVersion()).orElseThrow().equals(valid.hash())) {
-                    return new Accepted("update", true);
+                    return new Accepted(UPDATE, true);
                 }
                 created.addAll(requireReserved(reservations.reserve(tenantId, null, valid.spec().hosts())));
                 int next = tenants.latestVersion(tenantId) + 1;
                 tenants.insertVersion(tenantId, next, valid.canonicalJson(), valid.hash(), actor.id(),
                         rollbackTo == null ? "APPLY" : "ROLLBACK");
                 tenants.setStatus(tenantId, next, "VALIDATING", null);
-                tenants.startOperation(tenantId, "update", valid.hash(), rollbackTo == null
+                tenants.startOperation(tenantId, UPDATE, valid.hash(), rollbackTo == null
                         ? validating(next)
                         : "Rolling back to version " + rollbackTo + ": " + validating(next).toLowerCase(Locale.ROOT));
                 enqueueValidation(tenantId, next);
-                return new Accepted("update", false);
+                return new Accepted(UPDATE + ":" + next, false);
             }));
         } catch (RuntimeException e) {
             if (!created.isEmpty()) {
@@ -195,15 +233,15 @@ public class TenantService {
     }
 
     private Accepted repeatProvision(Actor actor, ServiceInstance instance, TenantSpecParser.Result.Valid valid) {
-        Tenant tenant = tenants.findById(instance.tenantId()).orElseThrow();
+        Tenant tenant = live(instance.tenantId());
         if (!actor.canSee(tenant)) {
             throw new TenantException(TenantException.Kind.CONFLICT, "'" + instance.instanceId() + "' is already taken");
         }
-        if (!"provision".equals(instance.operation()) || !instance.parametersHash().equals(valid.hash())) {
+        if (!PROVISION.equals(instance.operation()) || !instance.parametersHash().equals(valid.hash())) {
             throw new TenantException(TenantException.Kind.CONFLICT,
                     "The instance already exists with different parameters");
         }
-        return new Accepted("provision", !instance.inProgress());
+        return new Accepted(PROVISION + ":1", !instance.inProgress());
     }
 
     private ServiceInstance ownedInstance(Actor actor, String instanceId) {
@@ -212,11 +250,16 @@ public class TenantService {
     }
 
     private ServiceInstance visible(Actor actor, ServiceInstance instance) {
-        Tenant tenant = tenants.findById(instance.tenantId()).orElseThrow();
+        Tenant tenant = live(instance.tenantId());
         if (!actor.canSee(tenant)) {
             throw new TenantException(TenantException.Kind.NOT_FOUND, "The instance does not exist");
         }
         return instance;
+    }
+
+    private Tenant live(UUID tenantId) {
+        return tenants.findLiveById(tenantId)
+                .orElseThrow(() -> new TenantException(TenantException.Kind.NOT_FOUND, "The instance does not exist"));
     }
 
     private void enqueueValidation(UUID tenantId, int version) {

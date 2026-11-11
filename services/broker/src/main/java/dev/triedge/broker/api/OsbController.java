@@ -1,7 +1,6 @@
 package dev.triedge.broker.api;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import dev.triedge.broker.data.ServiceInstance;
 import dev.triedge.broker.service.Actor;
 import dev.triedge.broker.service.TenantException;
 import dev.triedge.broker.service.TenantService;
@@ -135,13 +134,14 @@ public class OsbController {
     @GetMapping("/service_instances/{instanceId}/last_operation")
     public Map<String, Object> lastOperation(
             @RequestHeader(name = API_VERSION_HEADER, required = false) @Nullable String version,
-            @PathVariable String instanceId, Caller caller) {
+            @PathVariable String instanceId,
+            @RequestParam(name = "operation", required = false) @Nullable String operation, Caller caller) {
         requireVersion(version);
-        ServiceInstance instance = service.lastOperation(actor(caller), instanceId);
+        TenantService.Operation last = service.lastOperation(actor(caller), instanceId, operation);
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("state", instance.operationState());
-        if (instance.operationDescription() != null) {
-            body.put("description", instance.operationDescription());
+        body.put("state", last.state());
+        if (last.description() != null) {
+            body.put("description", last.description());
         }
         return body;
     }
@@ -149,6 +149,11 @@ public class OsbController {
     @ExceptionHandler(OsbException.class)
     public ResponseEntity<Map<String, Object>> osbError(OsbException e) {
         return error(e.status, e.error, String.valueOf(e.getMessage()));
+    }
+
+    @ExceptionHandler(ApiException.class)
+    public ResponseEntity<Map<String, Object>> apiError(ApiException e) {
+        return error(HttpStatus.valueOf(e.getStatusCode().value()), null, String.valueOf(e.getBody().getDetail()));
     }
 
     @ExceptionHandler(TenantException.class)
