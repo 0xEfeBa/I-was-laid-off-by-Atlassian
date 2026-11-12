@@ -76,7 +76,8 @@ app() {
   docker compose --profile app up -d --build
   echo "Waiting for the gateway on http://localhost:8080"
   for _ in $(seq 1 60); do
-    if curl -fs -o /dev/null http://localhost:8080/.well-known/jwks.json; then
+    if curl -fs -o /dev/null http://localhost:8080/.well-known/jwks.json \
+      && [[ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/v1/users/me)" == 401 ]]; then
       echo "Gateway ready: http://localhost:8080"
       return
     fi

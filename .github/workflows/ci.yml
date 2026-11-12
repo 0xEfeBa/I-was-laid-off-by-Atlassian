@@ -85,6 +85,8 @@ jobs:
       - run: pnpm --filter @tri-edge/e2e test
         env:
           CI: "true"
+      - name: Load test script still works
+        run: docker compose --profile tools run --rm -e RATE=10 -e DURATION=15s k6
       - name: Service logs
         if: failure()
         run: docker compose --profile app logs --no-color --tail 200

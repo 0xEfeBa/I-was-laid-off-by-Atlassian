@@ -11,6 +11,10 @@ NODES="$REGIONS obs"
 REMOTE_DIR=/opt/tri-edge
 TENANT_SOURCE=10.99.0.1
 SAMPLE_BACKEND=127.0.0.1:8180
+IMAGES=${IMAGES:-ghcr.io/0xefeba/tri-edge}
+VERSION=${VERSION:-}
+RELEASE_WORKFLOW=https://github.com/0xEfeBa/I-was-laid-off-by-Atlassian/.github/workflows/release.yml@refs/heads/main
+APP_SERVICES="control-plane control-plane-2 identity broker edge-sidecar echo"
 SSH_OPTS=(-i "$STATE/id_ed25519" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$STATE/known_hosts"
   -o ConnectTimeout=10 -o ServerAliveInterval=15 -o LogLevel=ERROR)
 
@@ -209,13 +213,17 @@ EOF
 }
 
 bundle() {
-  (cd "$ROOT" && ./gradlew --quiet :services:identity:bootJar :services:edge-sidecar:bootJar \
-    :services:broker:bootJar :services:control-plane:bootJar :services:echo:bootJar)
+  local jars=()
+  if [[ -z "$VERSION" ]]; then
+    (cd "$ROOT" && ./gradlew --quiet :services:identity:bootJar :services:edge-sidecar:bootJar \
+      :services:broker:bootJar :services:control-plane:bootJar :services:echo:bootJar)
+    jars=(services/identity/build/libs/app.jar services/edge-sidecar/build/libs/app.jar \
+      services/broker/build/libs/app.jar services/control-plane/build/libs/app.jar services/echo/build/libs/app.jar)
+  fi
   tar -czf "$STATE/bundle.tgz" -C "$ROOT" docker db deploy/system-tenants envoy/bootstrap.yaml \
-    deploy/hetzner/patroni.Dockerfile deploy/hetzner/patroni.yml deploy/hetzner/region.compose.yaml \
-    deploy/hetzner/obs.compose.yaml deploy/hetzner/prometheus.yml observability \
-    services/identity/build/libs/app.jar services/edge-sidecar/build/libs/app.jar \
-    services/broker/build/libs/app.jar services/control-plane/build/libs/app.jar services/echo/build/libs/app.jar
+    deploy/etcd-auth.sh deploy/hetzner/patroni.Dockerfile deploy/hetzner/patroni.yml \
+    deploy/hetzner/region.compose.yaml deploy/hetzner/obs.compose.yaml deploy/hetzner/prometheus.yml observability \
+    ${jars[@]+"${jars[@]}"}
 }
 
 distribute() {
@@ -257,12 +265,27 @@ write_env() {
     echo "ETCD_EDGE_SIDECAR_PASSWORD=$(secret etcd_edge_sidecar)"
     echo "ETCD_BROKER_PASSWORD=$(secret etcd_broker)"
     echo "ETCD_CONTROL_PLANE_PASSWORD=$(secret etcd_control_plane)"
+    echo "IMAGES=$IMAGES"
+    echo "VERSION=${VERSION:-local}"
   } | remote "$region" "umask 077; cat > $REMOTE_DIR/region.env"
 }
 
 build_images() {
-  dc "$1" "build --quiet"
-  echo "Images built in $1"
+  if [[ -n "$VERSION" ]]; then
+    dc "$1" "pull --quiet"
+    echo "Images $VERSION pulled in $1"
+  else
+    dc "$1" "build --quiet"
+    echo "Images built in $1"
+  fi
+}
+
+migrations_image() {
+  if [[ -n "$VERSION" ]]; then
+    echo "$IMAGES-migrations:$VERSION"
+  else
+    echo tri-edge-flyway
+  fi
 }
 
 start_etcd() {
@@ -345,7 +368,12 @@ migrate() {
   if [[ "$(psql_on "$cluster" postgres <<< "SELECT count(*) FROM pg_database WHERE datname = 'triedge'")" == "0" ]]; then
     psql_on "$cluster" postgres <<< "CREATE DATABASE triedge" >/dev/null
   fi
-  remote "$cluster" "docker build -q -t tri-edge-flyway $REMOTE_DIR/db >/dev/null && docker run --rm --network host tri-edge-flyway \
+  if [[ -n "$VERSION" ]]; then
+    remote "$cluster" "docker pull -q $(migrations_image) >/dev/null"
+  else
+    remote "$cluster" "docker build -q -t tri-edge-flyway $REMOTE_DIR/db >/dev/null"
+  fi
+  remote "$cluster" "docker run --rm --network host $(migrations_image) \
     -url='jdbc:postgresql://127.0.0.1:$port/triedge' -user=postgres -password=$(secret postgres) migrate" >/dev/null
   psql_on "$cluster" triedge >/dev/null <<SQL
 ALTER ROLE identity_service PASSWORD '$(secret identity)';
@@ -521,6 +549,57 @@ logs() {
   dc "${1:-eu}" "logs --tail 100 ${2:-}"
 }
 
+management_port() {
+  case $1 in control-plane) echo 9100 ;; control-plane-2) echo 9101 ;; broker) echo 9110 ;;
+    edge-sidecar) echo 9120 ;; identity) echo 9130 ;; echo) echo 9180 ;; esac
+}
+
+wait_healthy() {
+  local region=$1 service=$2
+  for _ in $(seq 1 60); do
+    if remote "$region" "curl -fs -o /dev/null http://$(wg_ip "$region"):$(management_port "$service")/actuator/health"; then
+      return
+    fi
+    sleep 2
+  done
+  echo "$service in $region did not become healthy; see: deploy/hetzner/regions.sh logs $region $service" >&2
+  exit 1
+}
+
+verify_images() {
+  if ! command -v cosign >/dev/null; then
+    echo "cosign is needed to check the images (brew install cosign)" >&2
+    exit 1
+  fi
+  local image
+  for image in patroni migrations identity edge-sidecar broker control-plane echo; do
+    cosign verify --certificate-identity "$RELEASE_WORKFLOW" \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      "$IMAGES-$image:$VERSION" >/dev/null
+  done
+  echo "Images $VERSION are signed by the release workflow"
+}
+
+deploy() {
+  require_token
+  VERSION=${1:?Usage: deploy/hetzner/regions.sh deploy <commit sha>}
+  verify_images
+  for cluster in $REGIONS; do
+    migrate "$cluster"
+  done
+  local region service
+  for region in $REGIONS; do
+    write_env "$region"
+    dc "$region" "pull --quiet $APP_SERVICES"
+    for service in $APP_SERVICES; do
+      dc "$region" "up -d --no-deps $service" >/dev/null 2>&1
+      wait_healthy "$region" "$service"
+    done
+    wait_for_gateway "$region"
+    echo "$region runs $VERSION"
+  done
+}
+
 exposed() {
   require_token
   local region open found=0
@@ -562,6 +641,7 @@ case "${1:-}" in
   logs) shift; logs "$@" ;;
   grafana) grafana ;;
   exposed) exposed ;;
+  deploy) shift; deploy "$@" ;;
   down) down ;;
-  *) echo "Usage: deploy/hetzner/regions.sh {up|measure|test-db|test|heal|status|logs [region] [service]|grafana|exposed|down}" >&2; exit 1 ;;
+  *) echo "Usage: deploy/hetzner/regions.sh {up|deploy <commit sha>|measure|test-db|test|heal|status|logs [region] [service]|grafana|exposed|down}" >&2; exit 1 ;;
 esac

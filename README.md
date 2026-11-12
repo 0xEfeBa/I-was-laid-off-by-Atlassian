@@ -42,7 +42,7 @@ Each region runs the full stack: Envoy, the sidecar, the control plane, identity
 - When a region dies, Patroni promotes the standby that has every acknowledged write, and the sidecars start sending that region's users to wherever its database now lives.
 - Reads that don't belong to anyone, like serving tenant traffic, are answered by the nearest region.
 
-`deploy/hetzner/regions.sh up` builds this on three servers joined by WireGuard, and `deploy/hetzner/regions.sh test` powers off Germany in the middle of a run. The real three-continent numbers will go here once it has been run.
+`deploy/hetzner/regions.sh up` builds this on three servers joined by WireGuard, and `deploy/hetzner/regions.sh test` powers off Germany in the middle of a run. Signed images of every commit on `main` are published to GHCR, and `deploy/hetzner/regions.sh deploy <sha>` updates the regions one at a time ([docs/deploy.md](docs/deploy.md)). The real three-continent numbers will go here once it has been run.
 
 ## Results
 

@@ -1,7 +1,7 @@
 name: tri-edge
 
 x-patroni: &patroni
-  image: tri-edge-patroni
+  image: ${IMAGES:-tri-edge}-patroni:${VERSION:-local}
   build:
     context: deploy/hetzner
     dockerfile: patroni.Dockerfile
@@ -108,7 +108,7 @@ services:
 
   identity:
     <<: *app
-    image: tri-edge-identity
+    image: ${IMAGES:-tri-edge}-identity:${VERSION:-local}
     build:
       context: .
       dockerfile: docker/spring-service.Dockerfile
@@ -135,7 +135,7 @@ services:
 
   edge-sidecar:
     <<: *app
-    image: tri-edge-edge-sidecar
+    image: ${IMAGES:-tri-edge}-edge-sidecar:${VERSION:-local}
     build:
       context: .
       dockerfile: docker/spring-service.Dockerfile
@@ -166,7 +166,7 @@ services:
 
   broker:
     <<: *app
-    image: tri-edge-broker
+    image: ${IMAGES:-tri-edge}-broker:${VERSION:-local}
     build:
       context: .
       dockerfile: docker/spring-service.Dockerfile
@@ -191,7 +191,7 @@ services:
 
   control-plane: &control-plane
     <<: *app
-    image: tri-edge-control-plane
+    image: ${IMAGES:-tri-edge}-control-plane:${VERSION:-local}
     build:
       context: .
       dockerfile: docker/control-plane.Dockerfile
@@ -247,7 +247,7 @@ services:
 
   echo:
     <<: *app
-    image: tri-edge-echo
+    image: ${IMAGES:-tri-edge}-echo:${VERSION:-local}
     build:
       context: .
       dockerfile: docker/spring-service.Dockerfile
