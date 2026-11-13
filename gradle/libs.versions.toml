@@ -1,11 +1,11 @@
 [versions]
 java = "21"
-spring-boot = "4.1.1"
+spring-boot = "4.1.2"
 junit = "6.1.3"
 nimbus-jose-jwt = "10.10"
 bouncycastle = "1.86"
 envoy-api = "1.0.55"
-json-schema-validator = "3.0.8"
+json-schema-validator = "3.0.9"
 
 [libraries]
 spring-boot-gradle-plugin = { module = "org.springframework.boot:spring-boot-gradle-plugin", version.ref = "spring-boot" }
